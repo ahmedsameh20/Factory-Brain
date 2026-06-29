@@ -17,6 +17,80 @@ function parseCSV(text) {
   });
 }
 
+// Client-side counterpart to the backend's simulatedAnnealingCostHistory(),
+// for the "Static File" tab, which has no backend round-trip to compute it
+// from. The static CSV only carries the already-combined `obj_score` per
+// job (not the separate downtime/maintenance/energy components the live
+// DB-mode rows have), so that score is used directly as the per-job cost —
+// same cooling schedule and deadline/capacity penalties as the backend/notebook
+// version, just over a different cost input.
+function staticCostConvergenceHistory(
+  rows,
+  { nDays = 7, capacityHours = 16, tStart = 1000, tEnd = 1, alpha = 0.97, iterations = 1200 } = {}
+) {
+  const jobs = rows.filter((r) => r.obj_score != null && r.duration_hrs != null);
+  const n = jobs.length;
+  if (n === 0) return { initialCost: 0, bestCost: 0, reductionPct: 0, history: [] };
+
+  const totalCost = (assignment) => {
+    let cost = 0;
+    let penalty = 0;
+    const load = {};
+    for (let d = 1; d <= nDays; d += 1) load[d] = 0;
+
+    assignment.forEach((day, i) => {
+      const row = jobs[i];
+      cost += row.obj_score;
+      load[day] += row.duration_hrs;
+      if (day * 24 > (row.deadline_hrs || 0) + 24) penalty += 5000;
+    });
+
+    for (let d = 1; d <= nDays; d += 1) {
+      if (load[d] > capacityHours) penalty += (load[d] - capacityHours) * 300;
+    }
+
+    return cost + penalty;
+  };
+
+  let assignment = Array.from({ length: n }, () => 1 + Math.floor(Math.random() * nDays));
+  const initialCost = totalCost(assignment);
+  let bestCost = initialCost;
+  let currentCost = initialCost;
+
+  let T = tStart;
+  const history = [];
+
+  for (let it = 0; it < iterations; it += 1) {
+    const neighbour = [...assignment];
+    const idx = Math.floor(Math.random() * n);
+    neighbour[idx] = 1 + Math.floor(Math.random() * nDays);
+
+    const newCost = totalCost(neighbour);
+    const delta = newCost - currentCost;
+
+    if (delta < 0 || Math.random() < Math.exp(-delta / T)) {
+      assignment = neighbour;
+      currentCost = newCost;
+      if (currentCost < bestCost) bestCost = currentCost;
+    }
+
+    T = Math.max(T * alpha, tEnd);
+    if (it % 40 === 0) {
+      history.push({ iteration: it, cost: Number(bestCost.toFixed(2)) });
+    }
+  }
+  history.push({ iteration: iterations, cost: Number(bestCost.toFixed(2)) });
+
+  const reductionPct = initialCost > 0 ? (1 - bestCost / initialCost) * 100 : 0;
+
+  return {
+    initialCost: Number(initialCost.toFixed(2)),
+    bestCost: Number(bestCost.toFixed(2)),
+    reductionPct: Number(reductionPct.toFixed(1)),
+    history,
+  };
+}
+
 export default function MaintenanceSchedule({ locale }) {
   const [allRows, setAllRows] = useState([]);
   const [queryLoading, setQueryLoading] = useState(false);
@@ -165,7 +239,26 @@ export default function MaintenanceSchedule({ locale }) {
     fetch("/maintenance_schedule.csv")
       .then((res) => res.text())
       .then((text) => {
-        setAllRows(parseCSV(text));
+        const parsed = parseCSV(text);
+        setAllRows(parsed);
+        setConvergence(staticCostConvergenceHistory(parsed));
+
+        const topMaintained = parsed
+          .filter((r) => r.action === "MAINTAIN")
+          .sort((a, b) => (b.fail_prob || 0) - (a.fail_prob || 0))[0];
+        setTopRiskMachine(
+          topMaintained
+            ? {
+                machine_id: topMaintained.machine_id,
+                day: topMaintained.day,
+                fail_prob: topMaintained.fail_prob,
+                // The static CSV has no per-machine sensor readings, so there's
+                // nothing to run SHAP against — ShapWaterfall renders its
+                // "unavailable" state for this, rather than faking a value.
+                shapExplanation: null,
+              }
+            : null
+        );
       })
       .catch(() => {});
   }, [mode]);
@@ -211,6 +304,8 @@ export default function MaintenanceSchedule({ locale }) {
     setQueried(false);
     setResults(null);
     setError("");
+    setConvergence(null);
+    setTopRiskMachine(null);
   };
 
   const handleChange = (event) => {
@@ -671,13 +766,13 @@ export default function MaintenanceSchedule({ locale }) {
             </div>
           )}
 
-          {mode === "database" && convergence && (
+          {convergence && (
             <div style={{ marginTop: 22 }}>
               <CostConvergenceChart locale={locale} convergence={convergence} />
             </div>
           )}
 
-          {mode === "database" && topRiskMachine && (
+          {topRiskMachine && (
             <div style={{ marginTop: 22 }}>
               <ShapWaterfall
                 locale={locale}
