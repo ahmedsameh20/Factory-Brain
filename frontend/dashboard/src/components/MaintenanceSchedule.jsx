@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { getLiveMaintenanceSchedule } from "../services/api";
+import { getLiveMaintenanceSchedule, predictMaintenance } from "../services/api";
 import { CostConvergenceChart } from "./Charts";
 import ShapWaterfall from "./ShapWaterfall";
 
@@ -246,19 +246,44 @@ export default function MaintenanceSchedule({ locale }) {
         const topMaintained = parsed
           .filter((r) => r.action === "MAINTAIN")
           .sort((a, b) => (b.fail_prob || 0) - (a.fail_prob || 0))[0];
-        setTopRiskMachine(
-          topMaintained
-            ? {
-                machine_id: topMaintained.machine_id,
-                day: topMaintained.day,
-                fail_prob: topMaintained.fail_prob,
-                // The static CSV has no per-machine sensor readings, so there's
-                // nothing to run SHAP against — ShapWaterfall renders its
-                // "unavailable" state for this, rather than faking a value.
-                shapExplanation: null,
-              }
-            : null
-        );
+
+        if (!topMaintained) {
+          setTopRiskMachine(null);
+          return;
+        }
+
+        setTopRiskMachine({
+          machine_id: topMaintained.machine_id,
+          day: topMaintained.day,
+          fail_prob: topMaintained.fail_prob,
+          shapExplanation: null,
+        });
+
+        // The CSV now carries each row's sensor readings (type, temperatures,
+        // rpm, torque, tool wear), so the top-risk machine's SHAP explanation
+        // can be fetched the same way the "From Database" tab does — a real
+        // /api/predict call, not a static lookup. Best-effort: on failure
+        // (e.g. backend/ML service not running), the waterfall just falls
+        // back to its "unavailable" state rather than blocking the page.
+        if (topMaintained.type != null && topMaintained.air_temperature != null) {
+          predictMaintenance({
+            machine_id: topMaintained.machine_id,
+            type: topMaintained.type,
+            air_temperature: topMaintained.air_temperature,
+            process_temperature: topMaintained.process_temperature,
+            rotational_speed: topMaintained.rotational_speed,
+            torque: topMaintained.torque,
+            tool_wear: topMaintained.tool_wear,
+          })
+            .then((response) => {
+              setTopRiskMachine((current) =>
+                current && current.machine_id === topMaintained.machine_id
+                  ? { ...current, shapExplanation: response.data?.shapExplanation || null }
+                  : current
+              );
+            })
+            .catch(() => {});
+        }
       })
       .catch(() => {});
   }, [mode]);
