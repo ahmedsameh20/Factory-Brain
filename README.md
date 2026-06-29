@@ -97,6 +97,16 @@ Factory-Brain/
 └── steel_factory_outputs/   Generated model evaluation charts/results
 ```
 
+## Deployment
+
+For a VPS deploy (systemd services + Nginx reverse proxy), see the setup steps covered when this was deployed, then use [deploy.sh](deploy.sh) for subsequent updates — run it from the repo root on the server:
+
+```bash
+./deploy.sh
+```
+
+It pulls `origin/main`, reinstalls dependencies only when their lockfile/requirements changed, rebuilds the frontend, and restarts the `factorybrain-ml` / `factorybrain-backend` systemd services.
+
 ## Notes
 
 - Models in `ml-service/model/` are pre-trained `.pkl` artifacts; retraining notebooks/scripts are not part of this repo's runtime path.
