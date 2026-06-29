@@ -21,7 +21,11 @@ export const getMaintenanceSchedule = () => api.get("/maintenance-schedule");
 // holds a live time series. Both are meant to be kept current by an
 // external process via the POST endpoints below.
 export const getMachineReadings = () => api.get("/machine-readings");
+// This endpoint advances the live feed by one reading on every call (see
+// backend's advanceEnergyFeed()), so it must never be served from a cache —
+// the `_` param forces a unique URL per call regardless of what any
+// intermediate cache (browser, proxy, CDN) thinks about GET reusability.
 export const getLatestEnergyReadings = (limit = 32) =>
-  api.get(`/energy-readings/latest?limit=${limit}`);
+  api.get(`/energy-readings/latest?limit=${limit}&_=${Date.now()}`);
 export const getLiveMaintenanceSchedule = (force = false) =>
   api.get(`/maintenance-schedule/live${force ? "?force=true" : ""}`);

@@ -763,6 +763,11 @@ async function advanceEnergyFeed() {
 }
 
 app.get("/api/energy-readings/latest", async (req, res) => {
+  // This endpoint mutates state (advances the feed) on every call, so a
+  // cached response — from the browser, a CDN, or an intermediate proxy —
+  // would silently defeat that and make repeated clicks look identical.
+  res.set("Cache-Control", "no-store");
+
   try {
     await advanceEnergyFeed();
 
