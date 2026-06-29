@@ -724,7 +724,23 @@ let energyFeedTickInPhase = 0;
 let energyFeedCursor = null;
 
 async function advanceEnergyFeed() {
-  if (energyFeedCursor === null) energyFeedCursor = new Date();
+  if (energyFeedCursor === null) {
+    // This in-memory cursor resets to null on every process restart, but the
+    // table itself doesn't — if a previous run already advanced the
+    // simulated clock far into the future, restarting and falling back to
+    // wall-clock "now" would insert new rows *behind* the existing latest
+    // one, so "ORDER BY reading_timestamp DESC LIMIT 1" keeps returning the
+    // same old row forever no matter how many new ones get inserted under
+    // it. Resuming from whichever is later (existing data vs. now) keeps
+    // every new reading strictly the most recent, regardless of restarts.
+    const { pool } = database;
+    const [rows] = await pool.execute(
+      "SELECT reading_timestamp FROM energy_readings ORDER BY reading_timestamp DESC LIMIT 1"
+    );
+    const latestExisting = rows[0] ? new Date(rows[0].reading_timestamp) : null;
+    const now = new Date();
+    energyFeedCursor = latestExisting && latestExisting > now ? latestExisting : now;
+  }
 
   const postReading = async (point, loadType) => {
     energyFeedCursor = new Date(energyFeedCursor.getTime() + ENERGY_FEED_READING_STEP_MIN * 60 * 1000);
