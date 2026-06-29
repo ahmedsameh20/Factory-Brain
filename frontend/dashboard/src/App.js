@@ -41,7 +41,7 @@ const emptyStats = {
 const copy = {
   en: {
     appName: "Factory Brain",
-    subtitle: "Unified Smart Factory Dashboard",
+    subtitle: "Factory Unified Intelligent Dashboard",
     summary:
       "Operate predictive maintenance and energy optimization from a single modern control center with real ML outputs.",
     language: "AR",
