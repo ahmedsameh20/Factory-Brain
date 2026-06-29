@@ -7,6 +7,7 @@ require("dotenv").config();
 
 const database = require("./config/database");
 const { initializeDatabase } = database;
+const { BLOCKS: ENERGY_FEED_BLOCKS, PHASE_ORDER: ENERGY_FEED_PHASE_ORDER } = require("./database/energy-feed-data");
 
 const app = express();
 app.use(cors());
@@ -691,8 +692,80 @@ app.post("/api/machine-readings", async (req, res) => {
 });
 
 // ── "From database" mode: energy_readings (Energy module) ─────────────────
+
+async function insertEnergyReadingRow(reading) {
+  const { pool } = database;
+  await pool.execute(
+    `INSERT INTO energy_readings
+     (reading_timestamp, usage_kwh, lagging_reactive_kvarh, leading_reactive_kvarh, co2_tco2, load_type)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [
+      reading.reading_timestamp,
+      reading.usage_kwh,
+      reading.lagging_reactive_kvarh,
+      reading.leading_reactive_kvarh,
+      reading.co2_tco2,
+      reading.load_type || "Light_Load",
+    ]
+  );
+}
+
+// Request-driven counterpart to live-feed-simulator.js's timer-driven tick():
+// same real OPTIMAL -> MONITOR -> CRITICAL blocks (see energy-feed-data.js),
+// same per-phase seed-then-continue behavior, just advanced once per call
+// instead of once per TICK_MS — so the "Predict from last 8 hours" button
+// always pulls in one new real-data-based reading first, rather than reusing
+// a frozen table when nobody happens to have the standalone simulator script
+// running in the background. State is in-memory and resets on server restart.
+const ENERGY_FEED_BLOCK_TICKS = 12;
+const ENERGY_FEED_READING_STEP_MIN = 15;
+let energyFeedPhaseIndex = 0;
+let energyFeedTickInPhase = 0;
+let energyFeedCursor = null;
+
+async function advanceEnergyFeed() {
+  if (energyFeedCursor === null) energyFeedCursor = new Date();
+
+  const postReading = async (point, loadType) => {
+    energyFeedCursor = new Date(energyFeedCursor.getTime() + ENERGY_FEED_READING_STEP_MIN * 60 * 1000);
+    await insertEnergyReadingRow({
+      reading_timestamp: energyFeedCursor.toISOString().slice(0, 19).replace("T", " "),
+      usage_kwh: point.usage_kwh,
+      lagging_reactive_kvarh: point.lagging_reactive_kvarh,
+      leading_reactive_kvarh: point.leading_reactive_kvarh,
+      co2_tco2: point.co2_tco2,
+      load_type: loadType,
+    });
+  };
+
+  const phaseName = ENERGY_FEED_PHASE_ORDER[energyFeedPhaseIndex];
+  const block = ENERGY_FEED_BLOCKS[phaseName];
+
+  if (energyFeedTickInPhase === 0) {
+    // Entering a phase: re-prime its real 32-reading context first, exactly
+    // like live-feed-simulator.js's enterPhase(), so the rolling window the
+    // model sees matches that phase's real data, not a mix of two phases.
+    const seedPoints = block.points.slice(0, 32);
+    for (const point of seedPoints) {
+      await postReading(point, block.load_type);
+    }
+  }
+
+  const continuation = block.points.slice(32);
+  const point = continuation[energyFeedTickInPhase % continuation.length];
+  await postReading(point, block.load_type);
+
+  energyFeedTickInPhase += 1;
+  if (energyFeedTickInPhase >= ENERGY_FEED_BLOCK_TICKS) {
+    energyFeedTickInPhase = 0;
+    energyFeedPhaseIndex = (energyFeedPhaseIndex + 1) % ENERGY_FEED_PHASE_ORDER.length;
+  }
+}
+
 app.get("/api/energy-readings/latest", async (req, res) => {
   try {
+    await advanceEnergyFeed();
+
     const limit = Math.max(1, Math.min(500, Number(req.query.limit) || 32));
     const { pool } = database;
     const [rows] = await pool.execute(
@@ -712,36 +785,18 @@ app.get("/api/energy-readings/latest", async (req, res) => {
 
 // Insert one new live energy reading. Same role as the machine-readings POST
 // above, but append-only since this is a time series rather than a
-// current-state-per-machine table.
+// current-state-per-machine table. Still here for any external process
+// (PLC poller, MES integration) that wants to push real readings instead of
+// relying on advanceEnergyFeed()'s synthetic-but-realistic ones.
 app.post("/api/energy-readings", async (req, res) => {
   try {
-    const {
-      reading_timestamp,
-      usage_kwh,
-      lagging_reactive_kvarh,
-      leading_reactive_kvarh,
-      co2_tco2,
-      load_type,
-    } = req.body;
+    const { reading_timestamp } = req.body;
 
     if (!reading_timestamp) {
       return res.status(400).json({ success: false, error: "reading_timestamp is required" });
     }
 
-    const { pool } = database;
-    await pool.execute(
-      `INSERT INTO energy_readings
-       (reading_timestamp, usage_kwh, lagging_reactive_kvarh, leading_reactive_kvarh, co2_tco2, load_type)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [
-        reading_timestamp,
-        usage_kwh,
-        lagging_reactive_kvarh,
-        leading_reactive_kvarh,
-        co2_tco2,
-        load_type || "Light_Load",
-      ]
-    );
+    await insertEnergyReadingRow(req.body);
 
     return res.status(200).json({ success: true });
   } catch (error) {
