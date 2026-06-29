@@ -1,5 +1,7 @@
 # Factory Brain
 
+**Live site:** [factorybrain.site](https://factorybrain.site/)
+
 Factory Brain is an intelligent operations platform for manufacturing plants. It combines three connected modules — predictive maintenance, energy usage forecasting, and maintenance scheduling — behind a single dashboard, so a plant can see machine health, predict energy demand, and get a prioritized maintenance plan from the same data.
 
 ## Modules
