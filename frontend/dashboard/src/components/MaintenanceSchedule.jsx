@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { getLiveMaintenanceSchedule } from "../services/api";
+import { CostConvergenceChart } from "./Charts";
+import ShapWaterfall from "./ShapWaterfall";
 
 function parseCSV(text) {
   const lines = text.trim().split("\n");
@@ -33,6 +35,8 @@ export default function MaintenanceSchedule({ locale }) {
   const [liveError, setLiveError] = useState("");
   const [liveUpdatedAt, setLiveUpdatedAt] = useState(null);
   const [energyCostSource, setEnergyCostSource] = useState(null);
+  const [convergence, setConvergence] = useState(null);
+  const [topRiskMachine, setTopRiskMachine] = useState(null);
 
   const [form, setForm] = useState({
     machine_id: "M",
@@ -177,6 +181,8 @@ export default function MaintenanceSchedule({ locale }) {
         setAllRows(rows);
         setLiveUpdatedAt(new Date());
         setEnergyCostSource(data?.energyCostSource || null);
+        setConvergence(data?.convergence || null);
+        setTopRiskMachine(data?.topRiskMachine || null);
         // Database mode has no filter form, so show everything immediately
         // rather than waiting for a query to be run.
         setResults(computeResults(rows, noFilters));
@@ -662,6 +668,23 @@ export default function MaintenanceSchedule({ locale }) {
               >
                 {t.next}
               </button>
+            </div>
+          )}
+
+          {mode === "database" && convergence && (
+            <div style={{ marginTop: 22 }}>
+              <CostConvergenceChart locale={locale} convergence={convergence} />
+            </div>
+          )}
+
+          {mode === "database" && topRiskMachine && (
+            <div style={{ marginTop: 22 }}>
+              <ShapWaterfall
+                locale={locale}
+                machineId={topRiskMachine.machine_id}
+                day={topRiskMachine.day}
+                explanation={topRiskMachine.shapExplanation}
+              />
             </div>
           )}
         </div>

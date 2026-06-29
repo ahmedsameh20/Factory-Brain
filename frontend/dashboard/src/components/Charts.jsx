@@ -13,6 +13,11 @@ const labels = {
     activitySub: "Cumulative runs logged by each model, in the order they happened",
     maintenanceLine: "Maintenance",
     energyLine: "Energy",
+    convergenceTitle: "Scheduling Cost Convergence",
+    convergenceSub: "Simulated annealing's best cost found, as it searches for a lower-cost schedule",
+    initialCost: "Initial cost",
+    bestCost: "Best cost found",
+    reduction: "Reduction",
     noData: "Not enough data yet — run a few predictions to see this chart.",
     machine: "Machine",
     twf: "Tool Wear",
@@ -35,6 +40,11 @@ const labels = {
     activitySub: "العمليات التراكمية لكل موديل بترتيب حدوثها الفعلي",
     maintenanceLine: "الصيانة",
     energyLine: "الطاقة",
+    convergenceTitle: "تقارب تكلفة الجدولة",
+    convergenceSub: "أفضل تكلفة وجدها التلدين المحاكى أثناء البحث عن جدول أقل تكلفة",
+    initialCost: "التكلفة الابتدائية",
+    bestCost: "أفضل تكلفة",
+    reduction: "نسبة الانخفاض",
     noData: "لا توجد بيانات كافية بعد \u2014 نفّذ بعض التنبؤات لرؤية هذا الرسم.",
     machine: "الماكينة",
     twf: "تآكل الأداة",
@@ -354,6 +364,87 @@ export function ModuleActivityChart({ locale, history }) {
         <span>
           <span className="legend-dot" style={{ background: "var(--teal)" }} />
           {t.energyLine}: <strong>{energyCount}</strong>
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Line chart: scheduling cost convergence (simulated annealing) ----------
+   `convergence` comes from the backend's simulatedAnnealingCostHistory(), which
+   ports SM.ipynb's simulated_annealing() cost_history onto the live schedule —
+   the best cost found so far, sampled every few iterations as the search cools. */
+export function CostConvergenceChart({ locale, convergence }) {
+  const t = labels[locale];
+  const history = convergence?.history || [];
+  const width = 560;
+  const height = 170;
+  const padding = 26;
+
+  if (history.length < 2) {
+    return (
+      <div className="chart-card chart-card-wide">
+        <div className="chart-head">
+          <h3>{t.convergenceTitle}</h3>
+          <p>{t.convergenceSub}</p>
+        </div>
+        <div className="chart-empty">{t.noData}</div>
+      </div>
+    );
+  }
+
+  const costs = history.map((p) => p.cost);
+  const max = Math.max(...costs);
+  const min = Math.min(...costs);
+  const range = max - min || 1;
+
+  const coords = history.map((point, i) => {
+    const x = padding + (i / (history.length - 1)) * (width - padding * 2);
+    const y = height - padding - ((point.cost - min) / range) * (height - padding * 2);
+    return [x, y];
+  });
+
+  const linePath = coords
+    .map(([x, y], i) => `${i === 0 ? "M" : "L"} ${x.toFixed(1)} ${y.toFixed(1)}`)
+    .join(" ");
+  const areaPath = `${linePath} L ${coords[coords.length - 1][0].toFixed(1)} ${height - padding} L ${coords[0][0].toFixed(1)} ${height - padding} Z`;
+
+  return (
+    <div className="chart-card chart-card-wide">
+      <div className="chart-head">
+        <h3>{t.convergenceTitle}</h3>
+        <p>{t.convergenceSub}</p>
+      </div>
+
+      <svg
+        width="100%"
+        height={height}
+        viewBox={`0 0 ${width} ${height}`}
+        preserveAspectRatio="none"
+        className="trend-svg"
+      >
+        <defs>
+          <linearGradient id="convergenceFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="var(--rose)" stopOpacity="0.18" />
+            <stop offset="100%" stopColor="var(--rose)" stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        <path d={areaPath} fill="url(#convergenceFill)" stroke="none" />
+        <path d={linePath} fill="none" stroke="var(--rose)" strokeWidth="2.5" />
+        {coords.map(([x, y], i) => (
+          <circle key={i} cx={x} cy={y} r="2.5" fill="var(--rose)" />
+        ))}
+      </svg>
+
+      <div className="trend-minmax">
+        <span>
+          {t.initialCost}: <strong>{convergence.initialCost.toLocaleString()}</strong>
+        </span>
+        <span>
+          {t.bestCost}: <strong>{convergence.bestCost.toLocaleString()}</strong>
+        </span>
+        <span>
+          {t.reduction}: <strong>{convergence.reductionPct}%</strong>
         </span>
       </div>
     </div>

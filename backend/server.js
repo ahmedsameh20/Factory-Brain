@@ -223,6 +223,87 @@ function heuristicScheduler(rows, capacityHoursPerDay = 16, nDays = 7) {
   });
 }
 
+// ── Simulated Annealing cost-convergence, ported from SM.ipynb's
+// simulated_annealing() — same total_cost() (weighted downtime + maintenance
+// + energy, plus deadline/capacity penalties) and same cooling schedule, just
+// driven by the live `scored` rows instead of the notebook's static dataset.
+// This exists purely to plot a "cost convergence curve": the heuristic
+// scheduler above is still what actually assigns machines to days.
+function simulatedAnnealingCostHistory(
+  rows,
+  { nDays = 7, capacityHours = 16, tStart = 1000, tEnd = 1, alpha = 0.97, iterations = 1500 } = {}
+) {
+  const n = rows.length;
+  if (n === 0) {
+    return { initialCost: 0, bestCost: 0, reductionPct: 0, history: [] };
+  }
+
+  const totalCost = (assignment) => {
+    let cost = 0;
+    let penalty = 0;
+    const load = {};
+    for (let d = 1; d <= nDays; d += 1) load[d] = 0;
+
+    assignment.forEach((day, i) => {
+      const row = rows[i];
+      const downtime = 0.4 * row.fail_prob * row.downtime_cost_hr * row.maint_duration;
+      const maint = 0.35 * row.maint_cost_usd;
+      const energy = 0.25 * row.energy_cost_usd;
+      cost += downtime + maint + energy;
+      load[day] += row.maint_duration;
+      if (day * 24 > row.deadline_hours + 24) penalty += 5000;
+    });
+
+    for (let d = 1; d <= nDays; d += 1) {
+      if (load[d] > capacityHours) penalty += (load[d] - capacityHours) * 300;
+    }
+
+    return cost + penalty;
+  };
+
+  let assignment = Array.from({ length: n }, () => 1 + Math.floor(Math.random() * nDays));
+  const initialCost = totalCost(assignment);
+  let bestAssignment = [...assignment];
+  let bestCost = initialCost;
+  let currentCost = initialCost;
+
+  let T = tStart;
+  const history = [];
+
+  for (let it = 0; it < iterations; it += 1) {
+    const neighbour = [...assignment];
+    const idx = Math.floor(Math.random() * n);
+    neighbour[idx] = 1 + Math.floor(Math.random() * nDays);
+
+    const newCost = totalCost(neighbour);
+    const delta = newCost - currentCost;
+
+    if (delta < 0 || Math.random() < Math.exp(-delta / T)) {
+      assignment = neighbour;
+      currentCost = newCost;
+      if (currentCost < bestCost) {
+        bestCost = currentCost;
+        bestAssignment = [...assignment];
+      }
+    }
+
+    T = Math.max(T * alpha, tEnd);
+    if (it % 50 === 0) {
+      history.push({ iteration: it, cost: Number(bestCost.toFixed(2)) });
+    }
+  }
+  history.push({ iteration: iterations, cost: Number(bestCost.toFixed(2)) });
+
+  const reductionPct = initialCost > 0 ? (1 - bestCost / initialCost) * 100 : 0;
+
+  return {
+    initialCost: Number(initialCost.toFixed(2)),
+    bestCost: Number(bestCost.toFixed(2)),
+    reductionPct: Number(reductionPct.toFixed(1)),
+    history,
+  };
+}
+
 async function getRecentMaintenancePredictions(limit = 10) {
   const { pool } = database;
   const [rows] = await pool.execute(`
@@ -781,6 +862,7 @@ app.get("/api/maintenance-schedule/live", async (req, res) => {
 
     const scored = computeScores(withFailProb);
     const rows = heuristicScheduler(scored);
+    const convergence = simulatedAnnealingCostHistory(scored);
 
     const maintainCount = rows.filter((r) => r.action === "MAINTAIN").length;
     const deferredCount = rows.filter((r) => r.action === "DEFERRED").length;
@@ -789,6 +871,43 @@ app.get("/api/maintenance-schedule/live", async (req, res) => {
     const criticalCount = rows.filter(
       (r) => r.priority === 1 || (r.fail_prob && r.fail_prob >= 0.9)
     ).length;
+
+    // The single highest-risk machine that actually got scheduled this run —
+    // fetched fresh from the ML service (rather than reused) purely to get
+    // its SHAP explanation for the waterfall plot, since logged predictions
+    // don't persist shap_explanation.
+    let topRiskMachine = null;
+    const maintainedRows = rows
+      .filter((r) => r.action === "MAINTAIN")
+      .sort((a, b) => b.fail_prob - a.fail_prob);
+    if (maintainedRows.length > 0) {
+      const top = maintainedRows[0];
+      const m = machines.find((mm) => mm.machine_id === top.machine_id);
+      if (m) {
+        try {
+          const mlResponse = await axios.post(
+            MAINTENANCE_ML_URL,
+            {
+              Type: m.type,
+              Air_temperature_K: Number(m.air_temperature),
+              Process_temperature_K: Number(m.process_temperature),
+              Rotational_speed_rpm: Number(m.rotational_speed),
+              Torque_Nm: Number(m.torque),
+              Tool_wear_min: Number(m.tool_wear),
+            },
+            { headers: { "Content-Type": "application/json" } }
+          );
+          topRiskMachine = {
+            machine_id: top.machine_id,
+            day: top.day,
+            fail_prob: top.fail_prob,
+            shapExplanation: mlResponse.data?.predictions?.machine?.shap_explanation || null,
+          };
+        } catch (e) {
+          topRiskMachine = { machine_id: top.machine_id, day: top.day, fail_prob: top.fail_prob, shapExplanation: null };
+        }
+      }
+    }
 
     return res.status(200).json({
       success: true,
@@ -803,6 +922,8 @@ app.get("/api/maintenance-schedule/live", async (req, res) => {
           criticalCount,
         },
         energyCostSource: latestEnergyCostUsd != null ? "module2_forecast" : "machine_readings_default",
+        convergence,
+        topRiskMachine,
       },
     });
   } catch (error) {
