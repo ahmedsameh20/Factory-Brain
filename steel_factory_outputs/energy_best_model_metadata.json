@@ -1,0 +1,52 @@
+{
+  "model_name": "Neural Network",
+  "target": "Usage_kWh",
+  "features": [
+    "Lagging_Current_Reactive_Power_kVarh",
+    "Leading_Current_Reactive_Power_kVarh",
+    "CO2tCO2",
+    "Lagging_Current_Power_Factor",
+    "Leading_Current_Power_Factor",
+    "NSM",
+    "hour",
+    "minute",
+    "day_of_week_num",
+    "is_weekend",
+    "shift",
+    "hour_sin",
+    "hour_cos",
+    "day_sin",
+    "day_cos",
+    "load_Light_Load",
+    "load_Maximum_Load",
+    "load_Medium_Load",
+    "load_ordinal",
+    "total_reactive_power",
+    "pf_deviation_from_ideal",
+    "energy_lag_1",
+    "reactive_lag_1",
+    "energy_lag_4",
+    "reactive_lag_4",
+    "energy_lag_96",
+    "reactive_lag_96",
+    "energy_rmean_4",
+    "energy_rstd_4"
+  ],
+  "n_features": 29,
+  "training_date": "2026-04-04 12:01:30",
+  "dataset": "Steel Industry Energy Consumption (UCI ID: 851)",
+  "source": "DAEWOO Steel Co. Ltd, South Korea",
+  "performance": {
+    "test_r2": 0.9991,
+    "test_mae": 0.54,
+    "test_rmse": 0.93,
+    "test_mape": 76983846630622.36,
+    "train_r2": 0.9993
+  },
+  "data_info": {
+    "total_samples": 34863,
+    "train_samples": 27890,
+    "test_samples": 6973,
+    "index_range": "0 to 34862"
+  }
+}

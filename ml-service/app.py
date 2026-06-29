@@ -4,15 +4,25 @@ import pandas as pd
 import numpy as np
 import joblib
 
-app = FastAPI(
-    title="Factory Brain - Predictive Maintenance ML Service",
-    version="1.0"
+from energy_model import (
+    build_energy_feature_frame,
+    build_energy_recommendations,
+    classify_energy_status,
+    compute_efficiency_score,
+    ensure_energy_model,
 )
+import shap_explain
+
+app = FastAPI(
+    title="Factory Brain - Intelligent Operations ML Service",
+    version="2.0"
+)
+
 
 # =============================
 # Load Models
 # =============================
-MODELS = {
+MAINTENANCE_MODELS = {
     "machine": joblib.load("model/model_Machine_failure_best.pkl"),
     "twf": joblib.load("model/model_TWF_best.pkl"),
     "hdf": joblib.load("model/model_HDF_best.pkl"),
@@ -20,9 +30,11 @@ MODELS = {
     "osf": joblib.load("model/model_OSF_best.pkl"),
     "rnf": joblib.load("model/model_RNF_best.pkl"),
 }
+ENERGY_BUNDLE = ensure_energy_model()
+
 
 # =============================
-# Input Schema (API friendly)
+# Input Schemas
 # =============================
 class PredictionRequest(BaseModel):
     Type: str
@@ -33,8 +45,24 @@ class PredictionRequest(BaseModel):
     Tool_wear_min: int
 
 
+class EnergyHistoryPoint(BaseModel):
+    usage_kwh: float
+    lagging_reactive_kvarh: float
+    leading_reactive_kvarh: float
+    co2_tco2: float
+
+
+class EnergyPredictionRequest(BaseModel):
+    timestamp: str
+    load_type: str
+    # Oldest-first list of trailing 15-minute readings. The dashboard form
+    # collects 32 of these (8 hours); energy_model.py computes lags and
+    # rolling stats directly from this series rather than from flat fields.
+    history: list[EnergyHistoryPoint]
+
+
 # =============================
-# Feature Engineering
+# Maintenance Feature Engineering
 # =============================
 def feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -55,16 +83,18 @@ def feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
         df["Torque [Nm]"] * df["Rotational speed [rpm]"]
     )
 
-    df["high_temp_diff"] = (df["temp_diff"] > 10).astype(int)
-    df["low_speed"] = (df["Rotational speed [rpm]"] < 1500).astype(int)
-    df["high_torque"] = (df["Torque [Nm]"] > 40).astype(int)
+    # Thresholds match the 75th/25th percentile of the AI4I 2020 training
+    # data (Torque 75th pct = 46.80, Rotational speed 25th pct = 1423.00,
+    # temp_diff 75th pct = 11.00) — the model was trained on these quantile
+    # cutoffs, not on round numbers. Using 40/1500/10 here previously caused
+    # train/serve skew on these three flags.
+    df["high_temp_diff"] = (df["temp_diff"] > 11.00).astype(int)
+    df["low_speed"] = (df["Rotational speed [rpm]"] < 1423.00).astype(int)
+    df["high_torque"] = (df["Torque [Nm]"] > 46.80).astype(int)
 
     return df
 
 
-# =============================
-# Prepare Input
-# =============================
 def prepare_dataframe(data: PredictionRequest) -> pd.DataFrame:
     df = pd.DataFrame([{
         "Type": data.Type,
@@ -79,16 +109,22 @@ def prepare_dataframe(data: PredictionRequest) -> pd.DataFrame:
 
 
 # =============================
-# Prediction
+# Predictions
 # =============================
-def predict_all(df: pd.DataFrame):
+def predict_maintenance(df: pd.DataFrame):
     results = {}
 
-    for name, model in MODELS.items():
+    for name, model in MAINTENANCE_MODELS.items():
         prob = model.predict_proba(df)[0][1]
         results[name] = {
             "failure": int(prob > 0.5),
-            "failure_probability": round(float(prob), 2)
+            "failure_probability": round(float(prob), 2),
+            # None if shap isn't installed, the model type isn't supported,
+            # or anything else goes wrong — explanation is best-effort and
+            # never blocks the actual prediction.
+            "shap_explanation": shap_explain.explain_maintenance_prediction(
+                model, df, model_key=name
+            ),
         }
 
     overall = "NORMAL"
@@ -101,15 +137,64 @@ def predict_all(df: pd.DataFrame):
     }
 
 
+def predict_energy(data: EnergyPredictionRequest):
+    payload = data.model_dump()
+    features = ENERGY_BUNDLE["features"]
+    feature_frame = build_energy_feature_frame(payload, features)
+    # IMPORTANT: the deployed model (Gradient Boosting) was trained on RAW,
+    # unscaled features in EOM.ipynb — only the linear/distance-based
+    # candidate models (Linear/Ridge/Lasso/ElasticNet/KNN/Neural Network)
+    # were trained on the scaled version. Applying energy_scaler.pkl here
+    # fed the tree-based model z-scored inputs that never crossed its
+    # raw-value split thresholds, making predictions almost constant
+    # regardless of the real input. Predict directly on the raw frame.
+    predicted_usage = float(ENERGY_BUNDLE["model"].predict(feature_frame)[0])
+    thresholds = ENERGY_BUNDLE["thresholds"]
+    status = classify_energy_status(predicted_usage, thresholds)
+    efficiency_score = compute_efficiency_score(payload, predicted_usage, thresholds)
+    recommendations = build_energy_recommendations(payload, predicted_usage, thresholds)
+
+    return {
+        "predicted_usage_kwh": round(predicted_usage, 2),
+        "status": status,
+        "efficiency_score": efficiency_score,
+        "peak_window": feature_frame["hour"].iloc[0] in {9, 11, 14},
+        "recommendations": recommendations,
+        "model_name": ENERGY_BUNDLE["metadata"]["model_name"],
+        "thresholds": thresholds,
+        "shap_explanation": shap_explain.explain_energy_prediction(
+            ENERGY_BUNDLE["model"], feature_frame
+        ),
+    }
+
+
 # =============================
 # Routes
 # =============================
 @app.get("/")
 def root():
-    return {"status": "Factory Brain ML Service is running"}
+    return {
+        "status": "Factory Brain ML Service is running",
+        "modelsLoaded": len(MAINTENANCE_MODELS) + 1,
+        "services": ["predictive-maintenance", "energy-optimization"],
+    }
+
+
+@app.get("/energy/defaults")
+def energy_defaults():
+    return {
+        "defaults": ENERGY_BUNDLE["defaults"],
+        "metadata": ENERGY_BUNDLE["metadata"],
+        "thresholds": ENERGY_BUNDLE["thresholds"],
+    }
 
 
 @app.post("/predict")
 def predict(data: PredictionRequest):
     df = prepare_dataframe(data)
-    return predict_all(df)
+    return predict_maintenance(df)
+
+
+@app.post("/predict-energy")
+def predict_energy_route(data: EnergyPredictionRequest):
+    return predict_energy(data)
