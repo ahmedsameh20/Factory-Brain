@@ -105,33 +105,95 @@ async function logMaintenancePrediction(machineId, sensorValues, mlData) {
   const failureProbability = mlData.predictions?.machine?.failure_probability ?? null;
   const predictionId = `${Date.now()}${machineId ? `-${machineId}` : ""}`;
 
-  const { pool } = database;
-  await pool.execute(
-    `INSERT INTO predictions
-     (id, machine_id, machine_type, air_temperature, process_temperature, rotational_speed, torque, tool_wear, status,
-      failure_machine, failure_probability, failure_twf, failure_hdf, failure_pwf, failure_osf, failure_rnf)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      predictionId,
-      machineId ?? null,
-      sensorValues.type,
-      sensorValues.air_temperature,
-      sensorValues.process_temperature,
-      sensorValues.rotational_speed,
-      sensorValues.torque,
-      sensorValues.tool_wear,
-      mlData.overall_status,
-      failures.machine,
-      failureProbability,
-      failures.twf,
-      failures.hdf,
-      failures.pwf,
-      failures.osf,
-      failures.rnf,
-    ]
-  );
+  if (database.useMemoryStore) {
+    database.memoryStore.predictions.push({
+      id: predictionId,
+      timestamp: new Date(),
+      machine_id: machineId ?? null,
+      machine_type: sensorValues.type,
+      air_temperature: sensorValues.air_temperature,
+      process_temperature: sensorValues.process_temperature,
+      rotational_speed: sensorValues.rotational_speed,
+      torque: sensorValues.torque,
+      tool_wear: sensorValues.tool_wear,
+      status: mlData.overall_status,
+      failure_machine: failures.machine,
+      failure_probability: failureProbability,
+      failure_twf: failures.twf,
+      failure_hdf: failures.hdf,
+      failure_pwf: failures.pwf,
+      failure_osf: failures.osf,
+      failure_rnf: failures.rnf,
+    });
+  } else {
+    const { pool } = database;
+    await pool.execute(
+      `INSERT INTO predictions
+       (id, machine_id, machine_type, air_temperature, process_temperature, rotational_speed, torque, tool_wear, status,
+        failure_machine, failure_probability, failure_twf, failure_hdf, failure_pwf, failure_osf, failure_rnf)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        predictionId,
+        machineId ?? null,
+        sensorValues.type,
+        sensorValues.air_temperature,
+        sensorValues.process_temperature,
+        sensorValues.rotational_speed,
+        sensorValues.torque,
+        sensorValues.tool_wear,
+        mlData.overall_status,
+        failures.machine,
+        failureProbability,
+        failures.twf,
+        failures.hdf,
+        failures.pwf,
+        failures.osf,
+        failures.rnf,
+      ]
+    );
+  }
 
   return { failures, failureProbability };
+}
+
+// Auto-predict all machines in machine_readings via the ML service.
+// Called on each PDM tick so fleet health stays current without any user action.
+// Silently skips machines that fail (e.g. ML service offline) without crashing.
+async function autoPredict() {
+  let allMachines = [];
+  try {
+    if (database.useMemoryStore) {
+      allMachines = Object.values(database.memoryStore.machineReadings);
+    } else {
+      const [rows] = await database.pool.execute("SELECT * FROM machine_readings");
+      allMachines = rows;
+    }
+  } catch {
+    return;
+  }
+
+  for (const m of allMachines) {
+    try {
+      const mlResp = await axios.post(`${ML_SERVICE_BASE_URL}/predict`, {
+        Type: m.type,
+        Air_temperature_K: Number(m.air_temperature),
+        Process_temperature_K: Number(m.process_temperature),
+        Rotational_speed_rpm: Number(m.rotational_speed),
+        Torque_Nm: Number(m.torque),
+        Tool_wear_min: Number(m.tool_wear),
+      }, { timeout: 5000 });
+      await logMaintenancePrediction(m.machine_id, {
+        type: m.type,
+        air_temperature: Number(m.air_temperature),
+        process_temperature: Number(m.process_temperature),
+        rotational_speed: Number(m.rotational_speed),
+        torque: Number(m.torque),
+        tool_wear: Number(m.tool_wear),
+      }, mlResp.data);
+    } catch {
+      // ML service offline or model error — skip silently
+    }
+  }
 }
 
 async function getFailureStats() {
@@ -1477,12 +1539,15 @@ initializeDatabase()
         .then(() => console.log(`[Seed] ${SEED_MACHINES.length} production machines ready`))
         .catch((err) => console.error("[Seed] Failed:", err.message));
 
-      // ── PDM live feed: update 12 M-LIVE machine readings every 30s ──
-      // Mirrors what the standalone pdm-feed-simulator.js does, but driven
-      // from inside the server process so no extra terminal is needed.
-      pdmRunTick(upsertMachineReading);
-      setInterval(() => pdmRunTick(upsertMachineReading), PDM_TICK_MS);
-      console.log(`[PdM] Feed started — ${PDM_MACHINES.length} machines updating every ${PDM_TICK_MS / 1000}s`);
+      // ── PDM live feed: update 12 M-LIVE machine readings every 30s,
+      //    then auto-predict all machines so fleet health stays current ──
+      const pdmAndPredict = async () => {
+        await pdmRunTick(upsertMachineReading);
+        await autoPredict();
+      };
+      pdmAndPredict();
+      setInterval(pdmAndPredict, PDM_TICK_MS);
+      console.log(`[PdM] Feed + auto-predict started — ${PDM_MACHINES.length} machines every ${PDM_TICK_MS / 1000}s`);
     });
   })
   .catch((error) => {

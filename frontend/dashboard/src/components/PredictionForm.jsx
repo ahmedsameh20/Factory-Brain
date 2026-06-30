@@ -261,7 +261,7 @@ export default function PredictionForm({ locale, onResult }) {
         <div className="db-mode-panel">
           {/* Critical / high-priority machines quick-access strip */}
           {!machinesLoading && machines.length > 0 && (() => {
-            const critical = machines.filter((m) => Number(m.priority) === 1 || Number(m.tool_wear) >= 150);
+            const critical = machines.filter((m) => Number(m.priority) === 1 || Number(m.tool_wear) >= 140);
             if (!critical.length) return null;
             return (
               <div className="pdm-critical-strip">
