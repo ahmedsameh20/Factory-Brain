@@ -64,7 +64,7 @@ export default function RetrainPanel({ locale }) {
     setRunError("");
     try {
       const res = await retrainModel(rows, deploy);
-      setResult({ ...res.data, deploy });
+      setResult({ ...res.data.data, deploy });
     } catch (err) {
       setRunError(err.response?.data?.detail || err.response?.data?.error || (isRtl ? "فشل إعادة التدريب" : "Retraining failed"));
     } finally {
