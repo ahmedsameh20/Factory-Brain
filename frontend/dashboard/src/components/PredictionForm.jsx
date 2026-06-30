@@ -1,6 +1,30 @@
 import { useEffect, useMemo, useState } from "react";
 import { predictMaintenance, getMachineReadings } from "../services/api";
 
+const SENSOR_RANGES = {
+  air_temperature:    { min: 295.3, max: 304.5, unit: "K" },
+  process_temperature:{ min: 305.7, max: 313.8, unit: "K" },
+  rotational_speed:   { min: 1168,  max: 2886,  unit: "rpm" },
+  torque:             { min: 3.8,   max: 76.6,  unit: "Nm" },
+  tool_wear:          { min: 0,     max: 253,   unit: "min" },
+};
+
+function checkAnomalies(form, isRtl) {
+  const warnings = [];
+  for (const [key, range] of Object.entries(SENSOR_RANGES)) {
+    const v = parseFloat(form[key]);
+    if (isNaN(v)) continue;
+    if (v < range.min || v > range.max) {
+      warnings.push(
+        isRtl
+          ? `${key}: القيمة ${v} ${range.unit} خارج النطاق الطبيعي (${range.min}–${range.max})`
+          : `${key}: value ${v} ${range.unit} is outside normal range (${range.min}–${range.max})`
+      );
+    }
+  }
+  return warnings;
+}
+
 export default function PredictionForm({ locale, onResult }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -151,6 +175,8 @@ export default function PredictionForm({ locale, onResult }) {
     await runPrediction(form);
   };
 
+  const anomalyWarnings = useMemo(() => checkAnomalies(form, locale === "ar"), [form, locale]);
+
   const fields = [
     ["air_temperature", "K"],
     ["process_temperature", "K"],
@@ -208,6 +234,15 @@ export default function PredictionForm({ locale, onResult }) {
             ))}
           </div>
 
+          {anomalyWarnings.length > 0 && (
+            <div className="anomaly-warnings">
+              <div className="anomaly-header">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                {locale === "ar" ? "قيم خارج النطاق الطبيعي للتدريب" : "Values outside training data normal range"}
+              </div>
+              {anomalyWarnings.map((w, i) => <p key={i} className="anomaly-item">{w}</p>)}
+            </div>
+          )}
           {error ? <div className="form-message error">{error}</div> : null}
           <div className="form-actions">
             <p>{text.helper}</p>

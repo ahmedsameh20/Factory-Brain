@@ -1,13 +1,31 @@
 import axios from "axios";
 
-// In local dev there's no env var set, so it falls back to localhost:3000
-// (the Node backend running on your machine). In production, set
-// REACT_APP_API_BASE_URL in frontend/dashboard/.env.production to a
-// relative "/api" — Nginx then proxies that to the backend on the same
-// domain, so the browser never tries to reach "localhost" on a real visit.
 const api = axios.create({
   baseURL: process.env.REACT_APP_API_BASE_URL || "http://localhost:3000/api"
 });
+
+// Attach JWT token to every request
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem("fb_token");
+  if (token) config.headers.Authorization = `Bearer ${token}`;
+  return config;
+});
+
+// On 401, clear token and reload so LoginPage appears
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (
+      error.response?.status === 401 &&
+      !error.config.url.includes("/auth/login")
+    ) {
+      localStorage.removeItem("fb_token");
+      localStorage.removeItem("fb_user");
+      window.location.reload();
+    }
+    return Promise.reject(error);
+  }
+);
 
 export const predictMaintenance = (data) => api.post("/predict", data);
 export const predictEnergy = (data) => api.post("/predict-energy", data);
@@ -33,3 +51,15 @@ export const getLiveMaintenanceSchedule = (force = false) =>
 export const getSettings = () => api.get("/settings");
 export const updateSettings = (data) => api.post("/settings", data);
 export const predictBatch = (machines) => api.post("/predict/batch", { machines });
+
+// Auth
+export const login = (username, password) => api.post("/auth/login", { username, password });
+export const verifyToken = () => api.get("/auth/verify");
+
+// Analytics
+export const getFleetHealth = () => api.get("/fleet-health");
+export const getKPI = () => api.get("/kpi");
+export const anomalyCheck = (sensors) => api.post("/anomaly-check", sensors);
+
+// Retraining
+export const retrainModel = (rows, deploy = false) => api.post("/retrain", { rows, deploy });

@@ -6,6 +6,10 @@ import EnergyResultCard from "./components/EnergyResultCard";
 import MaintenanceSchedule from "./components/MaintenanceSchedule";
 import SettingsPanel from "./components/SettingsPanel";
 import BatchPrediction from "./components/BatchPrediction";
+import LoginPage from "./components/LoginPage";
+import FleetHealth from "./components/FleetHealth";
+import KPIPanel from "./components/KPIPanel";
+import RetrainPanel from "./components/RetrainPanel";
 import { HealthDonut, FailureBarChart, UsageTrendChart, ModuleActivityChart } from "./components/Charts";
 import {
   getDashboardStats,
@@ -52,6 +56,7 @@ const copy = {
       ["overview", "Overview"],
       ["predict", "Model Console"],
       ["history", "History"],
+      ["analytics", "Analytics"],
       ["status", "System Status"],
       ["settings", "Settings"],
     ],
@@ -80,6 +85,11 @@ const copy = {
     historyTitle: "Live History",
     historyText:
       "Every successful operation from either model is captured here with timestamp and real returned output.",
+    analyticsTitle: "Analytics",
+    analyticsText: "Fleet health heatmap, KPI metrics, and model retraining pipeline.",
+    fleetTitle: "Fleet Health",
+    kpiTitle: "Key Performance Indicators",
+    retrainTitle: "Model Retraining",
     statusTitle: "System Status",
     statusText: "Backend, storage, and ML service connectivity for deployed models.",
     labels: {
@@ -122,6 +132,7 @@ const copy = {
       ["overview", "نظرة عامة"],
       ["predict", "وحدة النماذج"],
       ["history", "السجل"],
+      ["analytics", "التحليلات"],
       ["status", "حالة النظام"],
       ["settings", "الإعدادات"],
     ],
@@ -150,6 +161,11 @@ const copy = {
     historyTitle: "السجل الحي",
     historyText:
       "كل عملية ناجحة من أي موديل يتم تسجيلها هنا مع الوقت والمخرجات الفعلية.",
+    analyticsTitle: "التحليلات",
+    analyticsText: "خريطة صحة الأسطول ومؤشرات الأداء وخط إعادة تدريب النموذج.",
+    fleetTitle: "صحة الأسطول",
+    kpiTitle: "مؤشرات الأداء الرئيسية",
+    retrainTitle: "إعادة تدريب النموذج",
     statusTitle: "حالة النظام",
     statusText: "اتصال الباك إند والتخزين وخدمة ML للموديلين العاملين.",
     labels: {
@@ -184,6 +200,9 @@ const copy = {
 function App() {
   const [locale, setLocale] = useState("en");
   const [activeTab, setActiveTab] = useState("overview");
+  const [user, setUser] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("fb_user") || "null"); } catch { return null; }
+  });
   const [activeModel, setActiveModel] = useState("maintenance");
   const [maintenanceResult, setMaintenanceResult] = useState(null);
   const [energyResult, setEnergyResult] = useState(null);
@@ -350,6 +369,16 @@ function App() {
     await refreshDashboard();
   };
 
+  if (!user || !localStorage.getItem("fb_token")) {
+    return <LoginPage locale={locale} onLogin={(u) => setUser(u)} />;
+  }
+
+  function handleLogout() {
+    localStorage.removeItem("fb_token");
+    localStorage.removeItem("fb_user");
+    setUser(null);
+  }
+
   return (
     <div className="app-shell" dir={dir}>
       <aside className="sidebar">
@@ -394,6 +423,14 @@ function App() {
           >
             {t.language}
           </button>
+          {user && (
+            <div className="sidebar-user-row">
+              <span className="sidebar-username">{user.username}</span>
+              <button type="button" className="logout-btn" onClick={handleLogout}>
+                {locale === "ar" ? "خروج" : "Sign out"}
+              </button>
+            </div>
+          )}
         </div>
       </aside>
 
@@ -675,6 +712,21 @@ function App() {
             </div>
           </section>
         )}
+        {activeTab === "analytics" && (
+          <section id="analytics" className="panel panel-full">
+            <div className="section-head">
+              <div>
+                <h2>{t.analyticsTitle}</h2>
+                <p>{t.analyticsText}</p>
+              </div>
+            </div>
+            <div className="analytics-section-label">{t.kpiTitle}</div>
+            <KPIPanel locale={locale} />
+            <div className="analytics-section-label" style={{ marginTop: 24 }}>{t.fleetTitle}</div>
+            <FleetHealth locale={locale} />
+          </section>
+        )}
+
         {activeTab === "settings" && (
           <section id="settings" className="panel panel-full">
             <div className="section-head">
@@ -684,6 +736,8 @@ function App() {
               </div>
             </div>
             <SettingsPanel locale={locale} />
+            <div className="analytics-section-label" style={{ marginTop: 24 }}>{t.retrainTitle}</div>
+            <RetrainPanel locale={locale} />
           </section>
         )}
       </main>

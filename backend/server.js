@@ -3,7 +3,35 @@ const axios = require("axios");
 const cors = require("cors");
 const fs = require("fs");
 const path = require("path");
+const jwt = require("jsonwebtoken");
 require("dotenv").config();
+
+// ── Auth ──────────────────────────────────────────────────────────────────────
+const JWT_SECRET = process.env.JWT_SECRET || "factory-brain-dev-secret-change-me";
+const APP_USERNAME = process.env.APP_USERNAME || "admin";
+const APP_PASSWORD = process.env.APP_PASSWORD || "admin123";
+
+function authMiddleware(req, res, next) {
+  const auth = req.headers.authorization;
+  if (!auth || !auth.startsWith("Bearer ")) {
+    return res.status(401).json({ success: false, error: "Authentication required" });
+  }
+  try {
+    req.user = jwt.verify(auth.slice(7), JWT_SECRET);
+    next();
+  } catch {
+    return res.status(401).json({ success: false, error: "Invalid or expired token" });
+  }
+}
+
+// ── Sensor normal ranges (AI4I 2020 training dataset) ─────────────────────────
+const SENSOR_RANGES = {
+  air_temperature:    { warnMin: 295, warnMax: 305,  absMin: 280, absMax: 320,  unit: "K" },
+  process_temperature:{ warnMin: 305, warnMax: 315,  absMin: 295, absMax: 325,  unit: "K" },
+  rotational_speed:   { warnMin: 1100, warnMax: 2950, absMin: 500, absMax: 3500, unit: "rpm" },
+  torque:             { warnMin: 1,   warnMax: 80,   absMin: 0,   absMax: 100,  unit: "Nm" },
+  tool_wear:          { warnMin: 0,   warnMax: 253,  absMin: 0,   absMax: 300,  unit: "min" },
+};
 
 const database = require("./config/database");
 const { initializeDatabase } = database;
@@ -437,7 +465,7 @@ async function getCombinedHistory(limit = 20) {
     .slice(0, limit);
 }
 
-app.post("/api/predict", async (req, res) => {
+app.post("/api/predict", authMiddleware, async (req, res) => {
   try {
     const {
       machine_id,
@@ -494,7 +522,7 @@ app.post("/api/predict", async (req, res) => {
   }
 });
 
-app.post("/api/predict-energy", async (req, res) => {
+app.post("/api/predict-energy", authMiddleware, async (req, res) => {
   try {
     const mlResponse = await axios.post(ENERGY_ML_URL, req.body, {
       headers: { "Content-Type": "application/json" },
@@ -1073,6 +1101,143 @@ app.get("/api/maintenance-schedule", (req, res) => {
   }
 });
 
+// ── Auth ──────────────────────────────────────────────────────────────────────
+app.post("/api/auth/login", (req, res) => {
+  const { username, password } = req.body;
+  if (username !== APP_USERNAME || password !== APP_PASSWORD) {
+    return res.status(401).json({ success: false, error: "Invalid username or password" });
+  }
+  const token = jwt.sign({ username, role: "admin" }, JWT_SECRET, { expiresIn: "24h" });
+  return res.json({ success: true, token, username, role: "admin" });
+});
+
+app.get("/api/auth/verify", authMiddleware, (req, res) => {
+  res.json({ success: true, user: req.user });
+});
+
+// ── Anomaly check ─────────────────────────────────────────────────────────────
+app.post("/api/anomaly-check", (req, res) => {
+  const fields = ["air_temperature", "process_temperature", "rotational_speed", "torque", "tool_wear"];
+  const anomalies = [];
+  for (const field of fields) {
+    const v = Number(req.body[field]);
+    const r = SENSOR_RANGES[field];
+    if (r == null || req.body[field] == null || isNaN(v)) continue;
+    if (v < r.warnMin || v > r.warnMax) {
+      anomalies.push({
+        field,
+        value: v,
+        unit: r.unit,
+        warnRange: `${r.warnMin}–${r.warnMax}`,
+        absRange: `${r.absMin}–${r.absMax}`,
+        severity: (v < r.absMin || v > r.absMax) ? "critical" : "warning",
+      });
+    }
+  }
+  return res.json({ success: true, anomalies, hasAnomalies: anomalies.length > 0 });
+});
+
+// ── Fleet health ──────────────────────────────────────────────────────────────
+app.get("/api/fleet-health", authMiddleware, async (req, res) => {
+  try {
+    const { pool } = database;
+    const [machines] = await pool.execute("SELECT * FROM machine_readings ORDER BY machine_id");
+    const fleet = await Promise.all(
+      machines.map(async (m) => {
+        const [rows] = await pool.execute(
+          "SELECT failure_probability, status, timestamp FROM predictions WHERE machine_id = ? ORDER BY timestamp DESC LIMIT 1",
+          [m.machine_id]
+        );
+        const latest = rows[0] || null;
+        return {
+          machine_id: m.machine_id,
+          type: m.type,
+          priority: Number(m.priority),
+          fail_prob: latest?.failure_probability != null ? Number(latest.failure_probability) : null,
+          status: latest?.status || "UNKNOWN",
+          last_predicted: latest?.timestamp || null,
+          sensors: {
+            air_temperature: Number(m.air_temperature),
+            process_temperature: Number(m.process_temperature),
+            rotational_speed: Number(m.rotational_speed),
+            torque: Number(m.torque),
+            tool_wear: Number(m.tool_wear),
+          },
+          maint_cost_usd: Number(m.maint_cost_usd),
+          deadline_hours: Number(m.deadline_hours),
+        };
+      })
+    );
+    fleet.sort((a, b) => (b.fail_prob ?? -1) - (a.fail_prob ?? -1));
+    return res.json({ success: true, data: fleet });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ── KPI metrics ───────────────────────────────────────────────────────────────
+app.get("/api/kpi", authMiddleware, async (req, res) => {
+  try {
+    const { pool } = database;
+    const [[failStats]] = await pool.execute(`
+      SELECT COUNT(*) as total, SUM(failure_machine) as failures,
+             MIN(timestamp) as first_pred, MAX(timestamp) as last_pred
+      FROM predictions`);
+    const [dailyActivity] = await pool.execute(`
+      SELECT DATE(timestamp) as date, COUNT(*) as predictions, SUM(failure_machine) as failures
+      FROM predictions
+      WHERE timestamp >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+      GROUP BY DATE(timestamp) ORDER BY date`);
+    const [[energyStats]] = await pool.execute(`
+      SELECT AVG(efficiency_score) as avg_eff,
+             SUM(CASE WHEN status='CRITICAL' THEN 1 ELSE 0 END) as critical_events,
+             AVG(predicted_usage_kwh) as avg_kwh, COUNT(*) as total_energy
+      FROM energy_predictions`);
+
+    const total = Number(failStats.total) || 0;
+    const failures = Number(failStats.failures) || 0;
+    let mtbfHours = null;
+    if (failures > 0 && failStats.first_pred && failStats.last_pred) {
+      const hrs = (new Date(failStats.last_pred) - new Date(failStats.first_pred)) / 3600000;
+      mtbfHours = Number((hrs / failures).toFixed(1));
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        totalPredictions: total,
+        failureCount: failures,
+        normalCount: total - failures,
+        failureRate: total > 0 ? Number(((failures / total) * 100).toFixed(1)) : 0,
+        mtbfHours,
+        dailyActivity,
+        energyAvgEfficiency: energyStats.avg_eff != null ? Number(Number(energyStats.avg_eff).toFixed(1)) : null,
+        energyCriticalEvents: Number(energyStats.critical_events) || 0,
+        energyAvgKwh: energyStats.avg_kwh != null ? Number(Number(energyStats.avg_kwh).toFixed(2)) : null,
+        totalEnergyPredictions: Number(energyStats.total_energy) || 0,
+      },
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ── Retrain proxy ─────────────────────────────────────────────────────────────
+app.post("/api/retrain", authMiddleware, async (req, res) => {
+  try {
+    const mlResponse = await axios.post(`${ML_SERVICE_BASE_URL}/retrain`, req.body, {
+      headers: { "Content-Type": "application/json" },
+      timeout: 180000,
+    });
+    return res.json({ success: true, data: mlResponse.data });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      error: error.response?.data?.detail || error.message || "Retrain failed",
+    });
+  }
+});
+
 app.get("/api/settings", (req, res) => {
   res.json({
     success: true,
@@ -1084,7 +1249,7 @@ app.get("/api/settings", (req, res) => {
   });
 });
 
-app.post("/api/settings", (req, res) => {
+app.post("/api/settings", authMiddleware, (req, res) => {
   const { energyRateUsdPerKwh, alertThreshold, alertsEnabled } = req.body;
   if (energyRateUsdPerKwh != null && !isNaN(Number(energyRateUsdPerKwh)) && Number(energyRateUsdPerKwh) > 0) {
     ENERGY_RATE_USD_PER_KWH = Number(energyRateUsdPerKwh);
@@ -1105,7 +1270,7 @@ app.post("/api/settings", (req, res) => {
   });
 });
 
-app.post("/api/predict/batch", async (req, res) => {
+app.post("/api/predict/batch", authMiddleware, async (req, res) => {
   const { machines } = req.body;
   if (!Array.isArray(machines) || machines.length === 0) {
     return res.status(400).json({ success: false, error: "machines array required" });

@@ -1,5 +1,6 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from typing import List
 import pandas as pd
 import numpy as np
 import joblib
@@ -198,3 +199,77 @@ def predict(data: PredictionRequest):
 @app.post("/predict-energy")
 def predict_energy_route(data: EnergyPredictionRequest):
     return predict_energy(data)
+
+
+# =============================
+# Retrain
+# =============================
+class TrainingRow(BaseModel):
+    Type: str
+    Air_temperature_K: float
+    Process_temperature_K: float
+    Rotational_speed_rpm: int
+    Torque_Nm: float
+    Tool_wear_min: int
+    Machine_failure: int
+
+
+class RetrainRequest(BaseModel):
+    rows: List[TrainingRow]
+    deploy: bool = False
+
+
+@app.post("/retrain")
+def retrain_model(data: RetrainRequest):
+    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.model_selection import train_test_split
+    from sklearn.metrics import accuracy_score, f1_score
+
+    if len(data.rows) < 50:
+        raise HTTPException(status_code=400, detail="Need at least 50 labeled rows")
+
+    records = [{
+        "Type": r.Type,
+        "Air temperature [K]": r.Air_temperature_K,
+        "Process temperature [K]": r.Process_temperature_K,
+        "Rotational speed [rpm]": r.Rotational_speed_rpm,
+        "Torque [Nm]": r.Torque_Nm,
+        "Tool wear [min]": r.Tool_wear_min,
+    } for r in data.rows]
+    targets = [r.Machine_failure for r in data.rows]
+
+    df = pd.DataFrame(records)
+    df = feature_engineering(df)
+    X = pd.get_dummies(df, columns=["Type"])
+
+    existing = MAINTENANCE_MODELS["machine"]
+    if hasattr(existing, "feature_names_in_"):
+        X = X.reindex(columns=existing.feature_names_in_, fill_value=0)
+
+    y = pd.Series(targets)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y if y.sum() > 1 else None
+    )
+
+    new_model = RandomForestClassifier(
+        n_estimators=150, random_state=42, class_weight="balanced", n_jobs=-1
+    )
+    new_model.fit(X_train, y_train)
+    y_pred = new_model.predict(X_test)
+
+    acc = float(accuracy_score(y_test, y_pred))
+    f1 = float(f1_score(y_test, y_pred, zero_division=0))
+
+    if data.deploy:
+        MAINTENANCE_MODELS["machine"] = new_model
+        joblib.dump(new_model, "model/model_Machine_failure_best.pkl")
+
+    return {
+        "rows_used": len(data.rows),
+        "train_size": int(len(X_train)),
+        "test_size": int(len(X_test)),
+        "accuracy": round(acc, 4),
+        "f1_score": round(f1, 4),
+        "failure_rate_pct": round(float(y.mean()) * 100, 1),
+        "deployed": data.deploy,
+    }
