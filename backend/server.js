@@ -192,9 +192,9 @@ async function autoPredict() {
         Type: m.type,
         Air_temperature_K: Number(m.air_temperature),
         Process_temperature_K: Number(m.process_temperature),
-        Rotational_speed_rpm: Number(m.rotational_speed),
+        Rotational_speed_rpm: Math.round(Number(m.rotational_speed)),
         Torque_Nm: Number(m.torque),
-        Tool_wear_min: Number(m.tool_wear),
+        Tool_wear_min: Math.round(Number(m.tool_wear)),
       }, { timeout: 5000 });
       await logMaintenancePrediction(m.machine_id, {
         type: m.type,
@@ -1030,9 +1030,9 @@ app.get("/api/maintenance-schedule/live", async (req, res) => {
             Type: m.type,
             Air_temperature_K: Number(m.air_temperature),
             Process_temperature_K: Number(m.process_temperature),
-            Rotational_speed_rpm: Number(m.rotational_speed),
+            Rotational_speed_rpm: Math.round(Number(m.rotational_speed)),
             Torque_Nm: Number(m.torque),
-            Tool_wear_min: Number(m.tool_wear),
+            Tool_wear_min: Math.round(Number(m.tool_wear)),
           };
           let mlData = null;
           try {
@@ -1124,9 +1124,9 @@ app.get("/api/maintenance-schedule/live", async (req, res) => {
               Type: m.type,
               Air_temperature_K: Number(m.air_temperature),
               Process_temperature_K: Number(m.process_temperature),
-              Rotational_speed_rpm: Number(m.rotational_speed),
+              Rotational_speed_rpm: Math.round(Number(m.rotational_speed)),
               Torque_Nm: Number(m.torque),
-              Tool_wear_min: Number(m.tool_wear),
+              Tool_wear_min: Math.round(Number(m.tool_wear)),
             },
             { headers: { "Content-Type": "application/json" } }
           );
@@ -1458,9 +1458,9 @@ app.post("/api/predict/batch", authMiddleware, async (req, res) => {
         Type: m.type || m.Type || "M",
         Air_temperature_K: Number(m.air_temperature || m.Air_temperature_K || 0),
         Process_temperature_K: Number(m.process_temperature || m.Process_temperature_K || 0),
-        Rotational_speed_rpm: Number(m.rotational_speed || m.Rotational_speed_rpm || 0),
+        Rotational_speed_rpm: Math.round(Number(m.rotational_speed || m.Rotational_speed_rpm || 0)),
         Torque_Nm: Number(m.torque || m.Torque_Nm || 0),
-        Tool_wear_min: Number(m.tool_wear || m.Tool_wear_min || 0),
+        Tool_wear_min: Math.round(Number(m.tool_wear || m.Tool_wear_min || 0)),
       };
       const mlResponse = await axios.post(MAINTENANCE_ML_URL, mlPayload, {
         headers: { "Content-Type": "application/json" },
