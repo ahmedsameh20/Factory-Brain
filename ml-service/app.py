@@ -116,7 +116,13 @@ def predict_maintenance(df: pd.DataFrame):
     results = {}
 
     for name, model in MAINTENANCE_MODELS.items():
-        prob = model.predict_proba(df)[0][1]
+        # Reorder columns to match the exact order the model was trained with.
+        # Newer sklearn raises ValueError if order differs even when names match.
+        if hasattr(model, "feature_names_in_"):
+            df_input = df.reindex(columns=model.feature_names_in_, fill_value=0)
+        else:
+            df_input = df
+        prob = model.predict_proba(df_input)[0][1]
         results[name] = {
             "failure": int(prob > 0.5),
             "failure_probability": round(float(prob), 2),
@@ -124,7 +130,7 @@ def predict_maintenance(df: pd.DataFrame):
             # or anything else goes wrong — explanation is best-effort and
             # never blocks the actual prediction.
             "shap_explanation": shap_explain.explain_maintenance_prediction(
-                model, df, model_key=name
+                model, df_input, model_key=name
             ),
         }
 
