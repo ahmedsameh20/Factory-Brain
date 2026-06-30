@@ -68,6 +68,11 @@ class EnergyPredictionRequest(BaseModel):
 def feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
+    # Encode machine type: L=0, M=1, H=2 — matches the label encoding used during training
+    type_map = {"L": 0, "M": 1, "H": 2}
+    if "Type" in df.columns and df["Type"].dtype == object:
+        df["Type"] = df["Type"].map(type_map).fillna(1).astype(int)
+
     df["temp_diff"] = df["Process temperature [K]"] - df["Air temperature [K]"]
     df["temp_ratio"] = df["Process temperature [K]"] / df["Air temperature [K]"]
 
