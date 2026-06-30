@@ -4,11 +4,14 @@ import ResultCard from "./components/ResultCard";
 import EnergyPredictionForm from "./components/EnergyPredictionForm";
 import EnergyResultCard from "./components/EnergyResultCard";
 import MaintenanceSchedule from "./components/MaintenanceSchedule";
+import SettingsPanel from "./components/SettingsPanel";
+import BatchPrediction from "./components/BatchPrediction";
 import { HealthDonut, FailureBarChart, UsageTrendChart, ModuleActivityChart } from "./components/Charts";
 import {
   getDashboardStats,
   getEnergyDefaults,
   getHealth,
+  getSettings,
 } from "./services/api";
 import "./styles/Dashboard.css";
 
@@ -50,12 +53,18 @@ const copy = {
       ["predict", "Model Console"],
       ["history", "History"],
       ["status", "System Status"],
+      ["settings", "Settings"],
     ],
     modules: {
       maintenance: "Predictive Maintenance",
       energy: "Energy Optimization",
       schedule: "Maintenance Schedule",
+      batch: "Batch CSV",
     },
+    batchTag: "Batch",
+    settingsTitle: "Settings",
+    settingsText: "Configure energy rate, alert thresholds, and notification preferences.",
+    exportHistory: "Export CSV",
     overviewTitle: "Operations Overview",
     overviewText:
       "Track both maintenance diagnostics and energy forecasts with a shared live history of real operations.",
@@ -114,12 +123,18 @@ const copy = {
       ["predict", "وحدة النماذج"],
       ["history", "السجل"],
       ["status", "حالة النظام"],
+      ["settings", "الإعدادات"],
     ],
     modules: {
       maintenance: "الصيانة التنبؤية",
       energy: "تحسين الطاقة",
       schedule: "جدول الصيانة",
+      batch: "دفعة CSV",
     },
+    batchTag: "دفعة",
+    settingsTitle: "الإعدادات",
+    settingsText: "ضبط سعر الطاقة وحدود التنبيه وتفضيلات الإشعارات.",
+    exportHistory: "تصدير CSV",
     overviewTitle: "نظرة عامة على التشغيل",
     overviewText:
       "تابع تشخيص الأعطال وتوقعات الطاقة مع سجل حي موحّد لكل العمليات الحقيقية.",
@@ -175,6 +190,8 @@ function App() {
   const [health, setHealth] = useState(emptyHealth);
   const [stats, setStats] = useState(emptyStats);
   const [energyDefaults, setEnergyDefaults] = useState(null);
+  const [appSettings, setAppSettings] = useState({ alertThreshold: 0.7, alertsEnabled: true });
+  const [toasts, setToasts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [lastUpdated, setLastUpdated] = useState(null);
@@ -184,16 +201,58 @@ function App() {
   const dir = locale === "ar" ? "rtl" : "ltr";
 
   async function refreshDashboard() {
-    const [healthResponse, statsResponse, defaultsResponse] = await Promise.all([
+    const [healthResponse, statsResponse, defaultsResponse, settingsResponse] = await Promise.all([
       getHealth(),
       getDashboardStats(),
       getEnergyDefaults(),
+      getSettings().catch(() => null),
     ]);
 
     setHealth(healthResponse.data?.data || emptyHealth);
     setStats(statsResponse.data?.data || emptyStats);
     setEnergyDefaults(defaultsResponse.data?.data?.defaults || null);
+    if (settingsResponse?.data?.data) setAppSettings(settingsResponse.data.data);
     setLastUpdated(Date.now());
+  }
+
+  function addToast(message, type = "warning") {
+    const id = Date.now();
+    setToasts((ts) => [...ts.slice(-3), { id, message, type }]);
+    setTimeout(() => setToasts((ts) => ts.filter((t) => t.id !== id)), 5000);
+  }
+
+  function fireAlert(machineLabel, failProb) {
+    if (!appSettings.alertsEnabled) return;
+    if (failProb < (appSettings.alertThreshold ?? 0.7)) return;
+    const pct = (failProb * 100).toFixed(1);
+    const msg = locale === "ar"
+      ? `تحذير: ${machineLabel} — احتمالية فشل ${pct}%`
+      : `Alert: ${machineLabel} — ${pct}% failure probability`;
+    addToast(msg, "danger");
+    if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+      new Notification("Factory Brain", { body: msg, icon: "/favicon.ico" });
+    }
+  }
+
+  function exportHistoryCSV() {
+    const headers = ["Timestamp", "Kind", "ID / Type", "Status", "Details"];
+    const rows = stats.history.map((item) => [
+      new Date(item.timestamp).toISOString(),
+      item.kind,
+      item.kind === "maintenance" ? item.input.type : item.result.loadType,
+      item.result.status,
+      item.kind === "maintenance"
+        ? `Temp:${item.input.air_temperature}K Speed:${item.input.rotational_speed}rpm Torque:${item.input.torque}Nm Wear:${item.input.tool_wear}min`
+        : `${item.result.predictedUsageKWh}kWh Eff:${item.result.efficiencyScore} ${item.result.peakWindow ? "Peak" : "Off-peak"}`,
+    ]);
+    const csv = [headers, ...rows].map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `factory-brain-history-${Date.now()}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   useEffect(() => {
@@ -274,11 +333,20 @@ function App() {
 
   const handleMaintenanceResult = async (nextResult) => {
     setMaintenanceResult(nextResult);
+    if (nextResult?.failureProbability != null) {
+      fireAlert(`Machine (${nextResult.machineType || "?"})`, nextResult.failureProbability);
+    }
     await refreshDashboard();
   };
 
   const handleEnergyResult = async (nextResult) => {
     setEnergyResult(nextResult);
+    if (nextResult?.status === "CRITICAL") {
+      addToast(
+        locale === "ar" ? `تحذير طاقة: الحالة حرجة — ${nextResult.predictedUsageKWh} kWh` : `Energy Alert: CRITICAL status — ${nextResult.predictedUsageKWh} kWh`,
+        "danger"
+      );
+    }
     await refreshDashboard();
   };
 
@@ -434,6 +502,14 @@ function App() {
                 <span>{t.scheduleTag}</span>
                 <strong>{t.modules.schedule}</strong>
               </button>
+              <button
+                type="button"
+                className={`module-chip ${activeModel === "batch" ? "active" : ""}`}
+                onClick={() => handleModelSwitch("batch")}
+              >
+                <span>{t.batchTag}</span>
+                <strong>{t.modules.batch}</strong>
+              </button>
             </div>
 
             <div className="console-subtitle">
@@ -441,6 +517,8 @@ function App() {
                 ? t.maintenanceSubtitle
                 : activeModel === "energy"
                 ? t.energySubtitle
+                : activeModel === "batch"
+                ? (locale === "ar" ? "رفع ملف CSV لتشغيل توقعات الصيانة على عدة ماكينات دفعة واحدة." : "Upload a CSV to run maintenance predictions on multiple machines at once.")
                 : t.scheduleSubtitle}
             </div>
 
@@ -459,6 +537,8 @@ function App() {
                   />
                   <EnergyResultCard locale={locale} result={energyResult} />
                 </>
+              ) : activeModel === "batch" ? (
+                <BatchPrediction locale={locale} />
               ) : (
                 <MaintenanceSchedule locale={locale} />
               )}
@@ -519,9 +599,16 @@ function App() {
                 <h2>{t.historyTitle}</h2>
                 <p>{t.historyText}</p>
               </div>
-              <div className="history-summary">
-                <strong>{stats.history.length}</strong>
-                <span>{t.totalHistory}</span>
+              <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                {stats.history.length > 0 && (
+                  <button type="button" className="db-mode-refresh-btn" onClick={exportHistoryCSV}>
+                    {t.exportHistory}
+                  </button>
+                )}
+                <div className="history-summary">
+                  <strong>{stats.history.length}</strong>
+                  <span>{t.totalHistory}</span>
+                </div>
               </div>
             </div>
 
@@ -588,7 +675,35 @@ function App() {
             </div>
           </section>
         )}
+        {activeTab === "settings" && (
+          <section id="settings" className="panel panel-full">
+            <div className="section-head">
+              <div>
+                <h2>{t.settingsTitle}</h2>
+                <p>{t.settingsText}</p>
+              </div>
+            </div>
+            <SettingsPanel locale={locale} />
+          </section>
+        )}
       </main>
+
+      {toasts.length > 0 && (
+        <div className="toast-container">
+          {toasts.map((toast) => (
+            <div key={toast.id} className={`toast toast-${toast.type}`}>
+              <span>{toast.message}</span>
+              <button
+                type="button"
+                className="toast-close"
+                onClick={() => setToasts((ts) => ts.filter((t) => t.id !== toast.id))}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

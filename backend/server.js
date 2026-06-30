@@ -22,8 +22,14 @@ const ENERGY_DEFAULTS_URL = `${ML_SERVICE_BASE_URL}/energy/defaults`;
 // its latest prediction into the energy_cost_usd figure Module 3's scoring
 // needs. It's a single plant-wide number applied to every machine in a given
 // scheduling run (Module 2 has no per-machine breakdown to draw from).
-// Adjust to your actual utility rate.
-const ENERGY_RATE_USD_PER_KWH = 0.15;
+// Adjust to your actual utility rate, or update via POST /api/settings.
+let ENERGY_RATE_USD_PER_KWH = parseFloat(process.env.ENERGY_RATE_USD_PER_KWH) || 0.15;
+
+// Runtime-configurable settings. Resets to defaults on server restart.
+const appSettings = {
+  alertThreshold: 0.70,
+  alertsEnabled: true,
+};
 
 // ── Module 3 reuse of Module 1/2 outputs ───────────────────────────────────
 // Returns the most recent logged prediction for a specific machine_id, or
@@ -1065,6 +1071,94 @@ app.get("/api/maintenance-schedule", (req, res) => {
       error: "Failed to load maintenance schedule",
     });
   }
+});
+
+app.get("/api/settings", (req, res) => {
+  res.json({
+    success: true,
+    data: {
+      energyRateUsdPerKwh: ENERGY_RATE_USD_PER_KWH,
+      alertThreshold: appSettings.alertThreshold,
+      alertsEnabled: appSettings.alertsEnabled,
+    },
+  });
+});
+
+app.post("/api/settings", (req, res) => {
+  const { energyRateUsdPerKwh, alertThreshold, alertsEnabled } = req.body;
+  if (energyRateUsdPerKwh != null && !isNaN(Number(energyRateUsdPerKwh)) && Number(energyRateUsdPerKwh) > 0) {
+    ENERGY_RATE_USD_PER_KWH = Number(energyRateUsdPerKwh);
+  }
+  if (alertThreshold != null && !isNaN(Number(alertThreshold))) {
+    appSettings.alertThreshold = Math.max(0.01, Math.min(1, Number(alertThreshold)));
+  }
+  if (alertsEnabled != null) {
+    appSettings.alertsEnabled = Boolean(alertsEnabled);
+  }
+  res.json({
+    success: true,
+    data: {
+      energyRateUsdPerKwh: ENERGY_RATE_USD_PER_KWH,
+      alertThreshold: appSettings.alertThreshold,
+      alertsEnabled: appSettings.alertsEnabled,
+    },
+  });
+});
+
+app.post("/api/predict/batch", async (req, res) => {
+  const { machines } = req.body;
+  if (!Array.isArray(machines) || machines.length === 0) {
+    return res.status(400).json({ success: false, error: "machines array required" });
+  }
+  if (machines.length > 100) {
+    return res.status(400).json({ success: false, error: "Maximum 100 machines per batch" });
+  }
+
+  const settled = await Promise.allSettled(
+    machines.map(async (m, i) => {
+      const mlPayload = {
+        Type: m.type || m.Type || "M",
+        Air_temperature_K: Number(m.air_temperature || m.Air_temperature_K || 0),
+        Process_temperature_K: Number(m.process_temperature || m.Process_temperature_K || 0),
+        Rotational_speed_rpm: Number(m.rotational_speed || m.Rotational_speed_rpm || 0),
+        Torque_Nm: Number(m.torque || m.Torque_Nm || 0),
+        Tool_wear_min: Number(m.tool_wear || m.Tool_wear_min || 0),
+      };
+      const mlResponse = await axios.post(MAINTENANCE_ML_URL, mlPayload, {
+        headers: { "Content-Type": "application/json" },
+        timeout: 10000,
+      });
+      const mlData = mlResponse.data;
+      return {
+        row: i + 1,
+        machine_id: m.machine_id || m.id || `Row-${i + 1}`,
+        type: mlPayload.Type,
+        status: mlData.overall_status,
+        failureProbability: mlData.predictions?.machine?.failure_probability ?? null,
+        failures: {
+          machine: mlData.overall_status === "FAILURE",
+          twf: Boolean(mlData.predictions?.twf?.failure),
+          hdf: Boolean(mlData.predictions?.hdf?.failure),
+          pwf: Boolean(mlData.predictions?.pwf?.failure),
+          osf: Boolean(mlData.predictions?.osf?.failure),
+          rnf: Boolean(mlData.predictions?.rnf?.failure),
+        },
+      };
+    })
+  );
+
+  const results = settled.map((r, i) =>
+    r.status === "fulfilled"
+      ? r.value
+      : {
+          row: i + 1,
+          machine_id: machines[i]?.machine_id || machines[i]?.id || `Row-${i + 1}`,
+          type: machines[i]?.type || "?",
+          error: r.reason?.response?.data?.detail || r.reason?.message || "Failed",
+        }
+  );
+
+  return res.json({ success: true, results });
 });
 
 app.get("/api/health", async (req, res) => {

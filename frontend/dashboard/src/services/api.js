@@ -29,3 +29,7 @@ export const getLatestEnergyReadings = (limit = 32) =>
   api.get(`/energy-readings/latest?limit=${limit}&_=${Date.now()}`);
 export const getLiveMaintenanceSchedule = (force = false) =>
   api.get(`/maintenance-schedule/live${force ? "?force=true" : ""}`);
+
+export const getSettings = () => api.get("/settings");
+export const updateSettings = (data) => api.post("/settings", data);
+export const predictBatch = (machines) => api.post("/predict/batch", { machines });

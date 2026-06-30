@@ -2,6 +2,29 @@ import { useEffect, useMemo, useState } from "react";
 import { getLiveMaintenanceSchedule, predictMaintenance } from "../services/api";
 import { CostConvergenceChart } from "./Charts";
 import ShapWaterfall from "./ShapWaterfall";
+import CalendarView from "./CalendarView";
+
+function downloadScheduleCSV(rows) {
+  const headers = ["Machine ID", "Day", "Action", "Duration (hrs)", "Fail Prob %", "Urgency %", "Priority", "Deadline (hrs)"];
+  const csvRows = rows.map((r) => [
+    r.machine_id,
+    r.day ?? "",
+    r.action,
+    r.duration_hrs,
+    r.fail_prob != null ? (r.fail_prob * 100).toFixed(1) : "",
+    r.urgency != null ? (r.urgency * 100).toFixed(1) : "",
+    r.priority,
+    r.deadline_hrs ?? "",
+  ]);
+  const csv = [headers, ...csvRows].map((r) => r.join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `maintenance-schedule-${Date.now()}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
 
 function parseCSV(text) {
   const lines = text.trim().split("\n");
@@ -111,6 +134,8 @@ export default function MaintenanceSchedule({ locale }) {
   const [energyCostSource, setEnergyCostSource] = useState(null);
   const [convergence, setConvergence] = useState(null);
   const [topRiskMachine, setTopRiskMachine] = useState(null);
+
+  const [viewMode, setViewMode] = useState("table");
 
   const [form, setForm] = useState({
     machine_id: "M",
@@ -642,6 +667,32 @@ export default function MaintenanceSchedule({ locale }) {
 
       {queried && results && results.summary.total > 0 && (
         <div className="schedule-results">
+          <div className="schedule-view-bar">
+            <div className="mode-toggle" style={{ marginBottom: 0 }}>
+              <button
+                type="button"
+                className={`mode-toggle-btn ${viewMode === "table" ? "active" : ""}`}
+                onClick={() => setViewMode("table")}
+              >
+                {locale === "ar" ? "جدول" : "Table"}
+              </button>
+              <button
+                type="button"
+                className={`mode-toggle-btn ${viewMode === "calendar" ? "active" : ""}`}
+                onClick={() => setViewMode("calendar")}
+              >
+                {locale === "ar" ? "تقويم" : "Calendar"}
+              </button>
+            </div>
+            <button
+              type="button"
+              className="db-mode-refresh-btn"
+              onClick={() => downloadScheduleCSV(results.rows)}
+            >
+              {locale === "ar" ? "تصدير CSV" : "Export CSV"}
+            </button>
+          </div>
+
           <div className="schedule-summary-grid">
             <div className="schedule-summary-card tone-maintain">
               <span>{t.maintain}</span>
@@ -661,7 +712,11 @@ export default function MaintenanceSchedule({ locale }) {
             </div>
           </div>
 
-          <div className="schedule-table-wrap">
+          {viewMode === "calendar" && (
+            <CalendarView rows={results.rows} locale={locale} />
+          )}
+
+          {viewMode === "table" && <div className="schedule-table-wrap">
             <table className="schedule-table">
               <thead>
                 <tr>
@@ -765,9 +820,9 @@ export default function MaintenanceSchedule({ locale }) {
                 ))}
               </tbody>
             </table>
-          </div>
+          </div>}
 
-          {totalPages > 1 && (
+          {viewMode === "table" && totalPages > 1 && (
             <div className="schedule-pagination">
               <button
                 type="button"
