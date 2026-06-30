@@ -3683,6 +3683,105 @@ body {
 
 .retrain-deploy-btn:disabled { opacity: 0.65; cursor: not-allowed; }
 
+/* ─── PDM critical machines strip ───────────────────────── */
+.pdm-critical-strip {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, #fff8f0, #fff3e8);
+  border: 1px solid rgba(217, 119, 6, 0.22);
+}
+
+.pdm-critical-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--amber);
+}
+
+.pdm-critical-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pdm-critical-chip {
+  display: grid;
+  grid-template-columns: auto auto 1fr auto;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  border: 1px solid transparent;
+  background: #fff;
+  cursor: pointer;
+  transition: var(--transition);
+  min-width: 140px;
+}
+
+.pdm-critical-chip.priority-1 {
+  border-color: rgba(163, 83, 83, 0.25);
+  box-shadow: 0 2px 8px rgba(163, 83, 83, 0.08);
+}
+
+.pdm-critical-chip.priority-2 {
+  border-color: rgba(151, 113, 58, 0.22);
+  box-shadow: 0 2px 8px rgba(151, 113, 58, 0.07);
+}
+
+.pdm-critical-chip:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(163, 83, 83, 0.14);
+}
+
+.pdm-critical-chip:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.pdm-chip-id {
+  font-size: 0.82rem;
+  font-weight: 800;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.pdm-chip-type {
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.pdm-chip-wear-track {
+  height: 5px;
+  border-radius: 3px;
+  background: var(--bg-accent);
+  overflow: hidden;
+  min-width: 40px;
+}
+
+.pdm-chip-wear-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--teal), var(--amber), var(--rose));
+}
+
+.pdm-chip-wear-val {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
 /* ─── Anomaly warnings in PredictionForm ────────────────── */
 .anomaly-warnings {
   padding: 12px 16px;

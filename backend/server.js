@@ -36,6 +36,9 @@ const SENSOR_RANGES = {
 const database = require("./config/database");
 const { initializeDatabase } = database;
 const { BLOCKS: ENERGY_FEED_BLOCKS, PHASE_ORDER: ENERGY_FEED_PHASE_ORDER } = require("./database/energy-feed-data");
+const { machines: SEED_MACHINES, seedMachines } = require("./database/seed-real-production-machines");
+const { MACHINES: PDM_MACHINES, tick: pdmTick, runTick: pdmRunTick } = require("./database/pdm-feed-simulator");
+const PDM_TICK_MS = 30000; // update machine readings every 30s
 
 const app = express();
 app.use(cors());
@@ -1417,6 +1420,47 @@ app.get("/api/health", async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 
+// Internal upsert used by the auto-seeder and PDM tick loop —
+// bypasses the HTTP layer so no auth token is needed at startup.
+async function upsertMachineReading(data) {
+  const {
+    machine_id, type, air_temperature, process_temperature,
+    rotational_speed, torque, tool_wear,
+    maint_duration_hrs = 4, maint_cost_usd = 500,
+    downtime_cost_per_hr = 1000, energy_cost_usd = 0.50,
+    deadline_hours = 72, priority = 2,
+  } = data;
+
+  if (database.useMemoryStore) {
+    database.memoryStore.machineReadings[machine_id] = {
+      machine_id, type, air_temperature, process_temperature,
+      rotational_speed, torque, tool_wear,
+      maint_duration_hrs, maint_cost_usd, downtime_cost_per_hr,
+      energy_cost_usd, deadline_hours, priority,
+      updated_at: new Date(),
+    };
+  } else {
+    const { pool } = database;
+    await pool.execute(
+      `INSERT INTO machine_readings
+         (machine_id, type, air_temperature, process_temperature, rotational_speed,
+          torque, tool_wear, maint_duration_hrs, maint_cost_usd, downtime_cost_per_hr,
+          energy_cost_usd, deadline_hours, priority)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         type=VALUES(type), air_temperature=VALUES(air_temperature),
+         process_temperature=VALUES(process_temperature), rotational_speed=VALUES(rotational_speed),
+         torque=VALUES(torque), tool_wear=VALUES(tool_wear),
+         maint_duration_hrs=VALUES(maint_duration_hrs), maint_cost_usd=VALUES(maint_cost_usd),
+         downtime_cost_per_hr=VALUES(downtime_cost_per_hr), energy_cost_usd=VALUES(energy_cost_usd),
+         deadline_hours=VALUES(deadline_hours), priority=VALUES(priority)`,
+      [machine_id, type, air_temperature, process_temperature, rotational_speed,
+       torque, tool_wear, maint_duration_hrs, maint_cost_usd, downtime_cost_per_hr,
+       energy_cost_usd, deadline_hours, priority]
+    );
+  }
+}
+
 initializeDatabase()
   .then(() => {
     app.listen(PORT, () => {
@@ -1424,10 +1468,21 @@ initializeDatabase()
       if (database.useMemoryStore) {
         console.log("Using in-memory storage (MySQL unavailable)");
       } else {
-        console.log(
-          `Connected to MySQL database: ${process.env.DB_NAME || "colab"}`
-        );
+        console.log(`Connected to MySQL database: ${process.env.DB_NAME || "colab"}`);
       }
+
+      // ── Auto-seed real production machines (BN429…R2) on every startup ──
+      // Uses internal upsert so no HTTP round-trip or auth token is needed.
+      seedMachines(upsertMachineReading)
+        .then(() => console.log(`[Seed] ${SEED_MACHINES.length} production machines ready`))
+        .catch((err) => console.error("[Seed] Failed:", err.message));
+
+      // ── PDM live feed: update 12 M-LIVE machine readings every 30s ──
+      // Mirrors what the standalone pdm-feed-simulator.js does, but driven
+      // from inside the server process so no extra terminal is needed.
+      pdmRunTick(upsertMachineReading);
+      setInterval(() => pdmRunTick(upsertMachineReading), PDM_TICK_MS);
+      console.log(`[PdM] Feed started — ${PDM_MACHINES.length} machines updating every ${PDM_TICK_MS / 1000}s`);
     });
   })
   .catch((error) => {

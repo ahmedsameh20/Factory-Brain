@@ -142,25 +142,29 @@ const machines = [
   },
 ];
 
-async function main() {
-  console.log(`Seeding ${machines.length} real production machines via ${BASE_URL}\n`);
+async function seedMachines(postFn) {
   for (const machine of machines) {
     try {
-      await axios.post(`${BASE_URL}/machine-readings`, machine);
-      console.log(`  \u2705 ${machine.machine_id}`);
+      await postFn(machine);
+      console.log(`  [Seed] \u2705 ${machine.machine_id}`);
     } catch (error) {
-      console.error(`  \u274c ${machine.machine_id}:`, error.message);
+      console.error(`  [Seed] \u274c ${machine.machine_id}:`, error.message);
     }
   }
-  console.log(
-    "\nDone. These will show up in Module 1's \"From Database\" picker and in Module 3's live schedule."
-  );
-  console.log(
-    "Reminder: all 7 share one sensor snapshot, so fail_prob will be identical across them until real per-machine telemetry exists."
-  );
 }
 
-main().catch((error) => {
-  console.error("Seed script failed:", error.message);
-  process.exit(1);
-});
+// Stand-alone mode: node database/seed-real-production-machines.js
+if (require.main === module) {
+  console.log(`Seeding ${machines.length} real production machines via ${BASE_URL}\n`);
+  const postFn = (m) => axios.post(`${BASE_URL}/machine-readings`, m);
+  seedMachines(postFn)
+    .then(() => {
+      console.log("\nDone. These will show up in Module 1's \"From Database\" picker and Module 3's live schedule.");
+    })
+    .catch((error) => {
+      console.error("Seed script failed:", error.message);
+      process.exit(1);
+    });
+}
+
+module.exports = { machines, seedMachines };

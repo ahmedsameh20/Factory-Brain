@@ -259,6 +259,44 @@ export default function PredictionForm({ locale, onResult }) {
         </form>
       ) : (
         <div className="db-mode-panel">
+          {/* Critical / high-priority machines quick-access strip */}
+          {!machinesLoading && machines.length > 0 && (() => {
+            const critical = machines.filter((m) => Number(m.priority) === 1 || Number(m.tool_wear) >= 150);
+            if (!critical.length) return null;
+            return (
+              <div className="pdm-critical-strip">
+                <div className="pdm-critical-header">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                  {locale === "ar" ? "ماكينات تحتاج انتباهاً" : "Machines needing attention"}
+                </div>
+                <div className="pdm-critical-chips">
+                  {critical.map((m) => {
+                    const wear = Number(m.tool_wear);
+                    const isHigh = Number(m.priority) === 1;
+                    const wearPct = Math.min(100, Math.round((wear / 253) * 100));
+                    return (
+                      <button
+                        key={m.machine_id}
+                        type="button"
+                        className={`pdm-critical-chip ${isHigh ? "priority-1" : "priority-2"}`}
+                        onClick={() => handleMachineSelect({ target: { value: m.machine_id } })}
+                        disabled={loading}
+                        title={`Wear: ${wear} min (${wearPct}%) | Priority: ${isHigh ? "High" : "Med"} | Deadline: ${m.deadline_hours}h`}
+                      >
+                        <span className="pdm-chip-id">{m.machine_id}</span>
+                        <span className="pdm-chip-type">{m.type}</span>
+                        <div className="pdm-chip-wear-track">
+                          <div className="pdm-chip-wear-fill" style={{ width: `${wearPct}%` }} />
+                        </div>
+                        <span className="pdm-chip-wear-val">{wear}min</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
+
           <label className="field-group">
             <span>{text.selectMachine}</span>
             <select
@@ -270,7 +308,7 @@ export default function PredictionForm({ locale, onResult }) {
               <option value="">{text.selectMachinePlaceholder}</option>
               {machines.map((machine) => (
                 <option key={machine.machine_id} value={machine.machine_id}>
-                  {machine.machine_id} ({machine.type})
+                  {machine.machine_id} ({machine.type}) {Number(machine.priority) === 1 ? "⚠" : ""}
                 </option>
               ))}
             </select>

@@ -116,28 +116,33 @@ function tick(machine) {
   return { reading, resetThisTick };
 }
 
-async function runTick() {
+async function runTick(postFn) {
   for (const machine of MACHINES) {
     const { reading, resetThisTick } = tick(machine);
     try {
-      await axios.post(`${BASE_URL}/machine-readings`, reading);
+      await postFn(reading);
       const tag = machine.degrading ? "\u26a0\ufe0f degrading" : "   stable ";
       const resetNote = resetThisTick ? "  \u21bb maintenance event (tool wear reset)" : "";
       console.log(
-        `[${reading.machine_id}] ${tag}  wear=${reading.tool_wear.toString().padStart(6)} min  ` +
+        `[PdM] [${reading.machine_id}] ${tag}  wear=${reading.tool_wear.toString().padStart(6)} min  ` +
         `proc_temp=${reading.process_temperature}K${resetNote}`
       );
     } catch (error) {
       console.error(`  \u274c ${machine.id}:`, error.message);
     }
   }
-  console.log("");
 }
 
-console.log(`Live PdM feed simulator starting.`);
-console.log(`Updating ${MACHINES.length} machines via ${BASE_URL}/machine-readings every ${TICK_MS / 1000}s.`);
-console.log(`2 machines (M-LIVE-011, M-LIVE-012) are deliberately degrading -- watch their risk climb over repeated checks.`);
-console.log(`Press Ctrl+C to stop.\n`);
+// Stand-alone mode: node database/pdm-feed-simulator.js
+if (require.main === module) {
+  console.log(`Live PdM feed simulator starting.`);
+  console.log(`Updating ${MACHINES.length} machines via ${BASE_URL}/machine-readings every ${TICK_MS / 1000}s.`);
+  console.log(`2 machines (M-LIVE-011, M-LIVE-012) are deliberately degrading.`);
+  console.log(`Press Ctrl+C to stop.\n`);
 
-runTick();
-setInterval(runTick, TICK_MS);
+  const postFn = (reading) => axios.post(`${BASE_URL}/machine-readings`, reading);
+  runTick(postFn);
+  setInterval(() => runTick(postFn), TICK_MS);
+}
+
+module.exports = { MACHINES, tick, runTick };
