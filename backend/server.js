@@ -1178,33 +1178,81 @@ app.get("/api/fleet-health", authMiddleware, async (req, res) => {
 // ── KPI metrics ───────────────────────────────────────────────────────────────
 app.get("/api/kpi", authMiddleware, async (req, res) => {
   try {
-    const { pool } = database;
-    const [[failStats]] = await pool.execute(`
-      SELECT COUNT(*) as total, SUM(failure_machine) as failures,
-             MIN(timestamp) as first_pred, MAX(timestamp) as last_pred
-      FROM predictions`);
-    const [dailyActivity] = await pool.execute(`
-      SELECT DATE(timestamp) as date, COUNT(*) as predictions, SUM(failure_machine) as failures
-      FROM predictions
-      WHERE timestamp >= DATE_SUB(NOW(), INTERVAL 7 DAY)
-      GROUP BY DATE(timestamp) ORDER BY date`);
-    const [[energyStats]] = await pool.execute(`
-      SELECT AVG(efficiency_score) as avg_eff,
-             SUM(CASE WHEN status='CRITICAL' THEN 1 ELSE 0 END) as critical_events,
-             AVG(predicted_usage_kwh) as avg_kwh, COUNT(*) as total_energy
-      FROM energy_predictions`);
+    let kpiData;
 
-    const total = Number(failStats.total) || 0;
-    const failures = Number(failStats.failures) || 0;
-    let mtbfHours = null;
-    if (failures > 0 && failStats.first_pred && failStats.last_pred) {
-      const hrs = (new Date(failStats.last_pred) - new Date(failStats.first_pred)) / 3600000;
-      mtbfHours = Number((hrs / failures).toFixed(1));
-    }
+    if (database.useMemoryStore) {
+      // Compute KPIs directly from the in-memory store
+      const preds = database.memoryStore.predictions;
+      const energyPreds = database.memoryStore.energyPredictions;
 
-    return res.json({
-      success: true,
-      data: {
+      const total = preds.length;
+      const failures = preds.filter((p) => p.failure_machine).length;
+      const timestamps = preds.map((p) => new Date(p.timestamp)).filter((d) => !isNaN(d));
+      const firstPred = timestamps.length ? new Date(Math.min(...timestamps)) : null;
+      const lastPred  = timestamps.length ? new Date(Math.max(...timestamps)) : null;
+      let mtbfHours = null;
+      if (failures > 0 && firstPred && lastPred) {
+        const hrs = (lastPred - firstPred) / 3600000;
+        mtbfHours = Number((hrs / failures).toFixed(1));
+      }
+
+      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 3600000);
+      const recentPreds = preds.filter((p) => new Date(p.timestamp) >= sevenDaysAgo);
+      const dayMap = {};
+      for (const p of recentPreds) {
+        const d = new Date(p.timestamp).toISOString().slice(0, 10);
+        if (!dayMap[d]) dayMap[d] = { date: d, predictions: 0, failures: 0 };
+        dayMap[d].predictions++;
+        if (p.failure_machine) dayMap[d].failures++;
+      }
+      const dailyActivity = Object.values(dayMap).sort((a, b) => a.date.localeCompare(b.date));
+
+      const totalEnergy = energyPreds.length;
+      const avgEff = totalEnergy
+        ? energyPreds.reduce((s, e) => s + Number(e.efficiency_score || 0), 0) / totalEnergy
+        : null;
+      const avgKwh = totalEnergy
+        ? energyPreds.reduce((s, e) => s + Number(e.predicted_usage_kwh || 0), 0) / totalEnergy
+        : null;
+      const criticalEvents = energyPreds.filter((e) => e.status === "CRITICAL").length;
+
+      kpiData = {
+        totalPredictions: total,
+        failureCount: failures,
+        normalCount: total - failures,
+        failureRate: total > 0 ? Number(((failures / total) * 100).toFixed(1)) : 0,
+        mtbfHours,
+        dailyActivity,
+        energyAvgEfficiency: avgEff != null ? Number(avgEff.toFixed(1)) : null,
+        energyCriticalEvents: criticalEvents,
+        energyAvgKwh: avgKwh != null ? Number(avgKwh.toFixed(2)) : null,
+        totalEnergyPredictions: totalEnergy,
+      };
+    } else {
+      const { pool } = database;
+      const [[failStats]] = await pool.execute(`
+        SELECT COUNT(*) as total, SUM(failure_machine) as failures,
+               MIN(timestamp) as first_pred, MAX(timestamp) as last_pred
+        FROM predictions`);
+      const [dailyActivity] = await pool.execute(`
+        SELECT DATE(timestamp) as date, COUNT(*) as predictions, SUM(failure_machine) as failures
+        FROM predictions
+        WHERE timestamp >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+        GROUP BY DATE(timestamp) ORDER BY date`);
+      const [[energyStats]] = await pool.execute(`
+        SELECT AVG(efficiency_score) as avg_eff,
+               SUM(CASE WHEN status='CRITICAL' THEN 1 ELSE 0 END) as critical_events,
+               AVG(predicted_usage_kwh) as avg_kwh, COUNT(*) as total_energy
+        FROM energy_predictions`);
+
+      const total = Number(failStats.total) || 0;
+      const failures = Number(failStats.failures) || 0;
+      let mtbfHours = null;
+      if (failures > 0 && failStats.first_pred && failStats.last_pred) {
+        const hrs = (new Date(failStats.last_pred) - new Date(failStats.first_pred)) / 3600000;
+        mtbfHours = Number((hrs / failures).toFixed(1));
+      }
+      kpiData = {
         totalPredictions: total,
         failureCount: failures,
         normalCount: total - failures,
@@ -1215,8 +1263,10 @@ app.get("/api/kpi", authMiddleware, async (req, res) => {
         energyCriticalEvents: Number(energyStats.critical_events) || 0,
         energyAvgKwh: energyStats.avg_kwh != null ? Number(Number(energyStats.avg_kwh).toFixed(2)) : null,
         totalEnergyPredictions: Number(energyStats.total_energy) || 0,
-      },
-    });
+      };
+    }
+
+    return res.json({ success: true, data: kpiData });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
   }

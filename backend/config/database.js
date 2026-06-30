@@ -470,4 +470,7 @@ module.exports = {
   get useMemoryStore() {
     return useMemoryStore;
   },
+  get memoryStore() {
+    return memoryStore;
+  },
 };
