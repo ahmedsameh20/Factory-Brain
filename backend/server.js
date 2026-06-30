@@ -565,11 +565,34 @@ app.post("/api/predict", authMiddleware, async (req, res) => {
       Tool_wear_min: tool_wear,
     };
 
-    const mlResponse = await axios.post(MAINTENANCE_ML_URL, mlPayload, {
-      headers: { "Content-Type": "application/json" },
-    });
+    let mlData = null;
+    try {
+      const mlResponse = await axios.post(MAINTENANCE_ML_URL, mlPayload, {
+        headers: { "Content-Type": "application/json" },
+        timeout: 5000,
+      });
+      mlData = mlResponse.data;
+    } catch (mlErr) {
+      // ML service offline — build a heuristic response so the UI still works
+      const wear = Math.min(253, Number(tool_wear) || 0);
+      const failProb = wear < 100
+        ? 0.05 + (wear / 100) * 0.15
+        : wear < 200
+          ? 0.20 + ((wear - 100) / 100) * 0.35
+          : 0.55 + ((wear - 200) / 53) * 0.35;
+      const status = failProb >= 0.5 ? "FAILURE" : "HEALTHY";
+      mlData = {
+        overall_status: status,
+        predictions: {
+          machine: { failure_probability: failProb, failure: failProb >= 0.5, shap_explanation: null },
+          twf: { failure: false }, hdf: { failure: false },
+          pwf: { failure: false }, osf: { failure: false }, rnf: { failure: false },
+        },
+        _heuristic: true,
+      };
+      console.warn("[Predict] ML service unreachable — using heuristic fallback:", mlErr.message);
+    }
 
-    const mlData = mlResponse.data;
     const { failures } = await logMaintenancePrediction(
       machine_id,
       { type, air_temperature, process_temperature, rotational_speed, torque, tool_wear },
@@ -582,6 +605,7 @@ app.post("/api/predict", authMiddleware, async (req, res) => {
       status: mlData.overall_status,
       failures,
       shapExplanation: mlData.predictions?.machine?.shap_explanation || null,
+      heuristic: mlData._heuristic || false,
     });
   } catch (error) {
     console.error("Maintenance Prediction Error:", error.message);
