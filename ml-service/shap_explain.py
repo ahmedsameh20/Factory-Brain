@@ -134,29 +134,36 @@ def _tree_shap_values(classifier, model_key, transformed_row):
     return np.asarray(values).flatten()
 
 
-def explain_maintenance_prediction(pipeline, raw_df, model_key, top_n=5):
+def explain_maintenance_prediction(model, raw_df, model_key, top_n=5):
     """Returns the top_n feature contributions toward THIS model's failure
     prediction, or None if shap isn't installed / something goes wrong —
     explanation is a nice-to-have, never worth failing the actual prediction
     over."""
+    if not SHAP_AVAILABLE:
+        return None
     try:
-        transformed, feature_names = _transform_through_preprocessor(pipeline, raw_df)
-        row = transformed[0]
-        classifier = pipeline.named_steps["classifier"]
+        # Support both plain classifiers and imblearn/sklearn Pipelines.
+        if hasattr(model, "named_steps") and "preprocessor" in model.named_steps:
+            transformed, feature_names = _transform_through_preprocessor(model, raw_df)
+            row = transformed[0]
+            classifier = model.named_steps["classifier"]
+        else:
+            # Plain classifier — raw_df is already the fully-engineered numeric frame
+            classifier = model
+            row = raw_df.values[0]
+            feature_names = list(raw_df.columns)
+
         classifier_name = type(classifier).__name__
 
         if classifier_name in LINEAR_CLASSIFIER_NAMES:
             values = _linear_shap_values(classifier, row, feature_names)
-        elif SHAP_AVAILABLE and classifier_name in TREE_CLASSIFIER_NAMES:
+        elif classifier_name in TREE_CLASSIFIER_NAMES:
             values = _tree_shap_values(classifier, model_key, row)
         else:
             return None
 
         return _top_contributions(feature_names, values, top_n)
     except Exception as exc:
-        # Explanation is best-effort and should never take down an
-        # otherwise-successful prediction — but silently swallowing the
-        # real cause makes this impossible to debug, so log it loudly.
         logger.error(
             "SHAP explanation failed for model_key=%s (SHAP_AVAILABLE=%s): %s\n%s",
             model_key, SHAP_AVAILABLE, exc, traceback.format_exc()
