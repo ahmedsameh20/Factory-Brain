@@ -68,6 +68,12 @@ const appSettings = {
 // have machine_id = NULL and are never matched here, by design — only
 // DB-mode PdM predictions are tied to a specific machine).
 async function getLatestPredictionForMachine(machineId) {
+  if (database.useMemoryStore) {
+    const preds = database.memoryStore.predictions
+      .filter((p) => p.machine_id === machineId)
+      .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+    return preds[0] || null;
+  }
   const { pool } = database;
   const [rows] = await pool.execute(
     "SELECT * FROM predictions WHERE machine_id = ? ORDER BY timestamp DESC LIMIT 1",
@@ -76,17 +82,25 @@ async function getLatestPredictionForMachine(machineId) {
   return rows[0] || null;
 }
 
-// Converts Module 2's most recent energy forecast into a dollar figure for
-// Module 3's scoring. Returns null if no energy prediction has ever been
-// logged yet (fresh system), so callers can fall back to machine_readings'
-// stored value instead.
 async function getLatestEnergyCostUsd() {
-  const { pool } = database;
-  const [rows] = await pool.execute(
-    "SELECT predicted_usage_kwh FROM energy_predictions ORDER BY timestamp DESC LIMIT 1"
-  );
-  if (!rows[0] || rows[0].predicted_usage_kwh == null) return null;
-  return Number(rows[0].predicted_usage_kwh) * ENERGY_RATE_USD_PER_KWH;
+  try {
+    if (database.useMemoryStore) {
+      const preds = database.memoryStore.energyPredictions;
+      if (!preds.length) return null;
+      const latest = preds[preds.length - 1];
+      return latest?.predicted_usage_kwh != null
+        ? Number(latest.predicted_usage_kwh) * ENERGY_RATE_USD_PER_KWH
+        : null;
+    }
+    const { pool } = database;
+    const [rows] = await pool.execute(
+      "SELECT predicted_usage_kwh FROM energy_predictions ORDER BY timestamp DESC LIMIT 1"
+    );
+    if (!rows[0] || rows[0].predicted_usage_kwh == null) return null;
+    return Number(rows[0].predicted_usage_kwh) * ENERGY_RATE_USD_PER_KWH;
+  } catch {
+    return null;
+  }
 }
 
 // Single shared place that knows how to log a maintenance prediction, used
@@ -944,8 +958,13 @@ app.get("/api/maintenance-schedule/live", async (req, res) => {
     // PREDICTION_STALE_AFTER_MS.
     const forceRefresh = req.query.force === "true";
 
-    const { pool } = database;
-    const [machines] = await pool.execute("SELECT * FROM machine_readings");
+    let machines;
+    if (database.useMemoryStore) {
+      machines = Object.values(database.memoryStore.machineReadings);
+    } else {
+      const { pool } = database;
+      [machines] = await pool.execute("SELECT * FROM machine_readings");
+    }
 
     if (machines.length === 0) {
       return res.status(200).json({
@@ -980,10 +999,9 @@ app.get("/api/maintenance-schedule/live", async (req, res) => {
           failProb = Number(loggedPrediction.failure_probability);
           predictionSource = "reused";
         } else {
-          // Never predicted before, OR the logged prediction is stale: fall
-          // back to a direct model call, and log the result the same way
-          // Module 1's own route does, so the next live-schedule run (and
-          // the prediction history) has a fresh one too.
+          // Never predicted before, OR the logged prediction is stale: try
+          // a direct model call first, fall back to a tool-wear heuristic
+          // if the ML service is offline so the schedule still renders.
           const mlPayload = {
             Type: m.type,
             Air_temperature_K: Number(m.air_temperature),
@@ -992,29 +1010,45 @@ app.get("/api/maintenance-schedule/live", async (req, res) => {
             Torque_Nm: Number(m.torque),
             Tool_wear_min: Number(m.tool_wear),
           };
-          const mlResponse = await axios.post(MAINTENANCE_ML_URL, mlPayload, {
-            headers: { "Content-Type": "application/json" },
-          });
-          const mlData = mlResponse.data;
-          failProb = mlData?.predictions?.machine?.failure_probability ?? 0;
-          predictionSource = loggedPrediction
-            ? forceRefresh
-              ? "recomputed_forced"
-              : "recomputed_stale"
-            : "recomputed_new";
+          let mlData = null;
+          try {
+            const mlResponse = await axios.post(MAINTENANCE_ML_URL, mlPayload, {
+              headers: { "Content-Type": "application/json" },
+              timeout: 4000,
+            });
+            mlData = mlResponse.data;
+          } catch {
+            // ML service offline — use a simple tool-wear heuristic so the
+            // schedule still shows something useful instead of crashing.
+            // wear 0–100 → 0.05–0.20, 100–200 → 0.20–0.55, 200+ → 0.55–0.90
+            const wear = Math.min(253, Number(m.tool_wear));
+            const heuristic = wear < 100
+              ? 0.05 + (wear / 100) * 0.15
+              : wear < 200
+              ? 0.20 + ((wear - 100) / 100) * 0.35
+              : 0.55 + ((wear - 200) / 53) * 0.35;
+            failProb = Math.min(0.95, Number(heuristic.toFixed(3)));
+            predictionSource = "heuristic_ml_offline";
+          }
 
-          await logMaintenancePrediction(
-            m.machine_id,
-            {
-              type: m.type,
-              air_temperature: Number(m.air_temperature),
-              process_temperature: Number(m.process_temperature),
-              rotational_speed: Number(m.rotational_speed),
-              torque: Number(m.torque),
-              tool_wear: Number(m.tool_wear),
-            },
-            mlData
-          );
+          if (mlData) {
+            failProb = mlData?.predictions?.machine?.failure_probability ?? 0;
+            predictionSource = loggedPrediction
+              ? forceRefresh ? "recomputed_forced" : "recomputed_stale"
+              : "recomputed_new";
+            await logMaintenancePrediction(
+              m.machine_id,
+              {
+                type: m.type,
+                air_temperature: Number(m.air_temperature),
+                process_temperature: Number(m.process_temperature),
+                rotational_speed: Number(m.rotational_speed),
+                torque: Number(m.torque),
+                tool_wear: Number(m.tool_wear),
+              },
+              mlData
+            );
+          }
         }
 
         return {
